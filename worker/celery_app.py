@@ -4,6 +4,13 @@ Orchestrates the full CV pipeline as a background task.
 
 Start worker:
     celery -A worker.celery_app worker --concurrency=1 --loglevel=info
+
+Cache behaviour (controlled by PIPELINE_FORCE_RERUN env var):
+    - By default each stage checks the PipelineCache before running.
+      If a valid cached result exists it is loaded and the stage is skipped.
+    - Set PIPELINE_FORCE_RERUN=1 to bypass all caches and re-run every stage.
+    - The /cache/{job_id} DELETE endpoint (api/main.py) invalidates from a
+      given stage onwards, then re-runs from that point on next trigger.
 """
 from __future__ import annotations
 
@@ -17,9 +24,10 @@ from celery import Celery
 
 logger = logging.getLogger(__name__)
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-CONFIGS_DIR = Path(os.getenv("CONFIGS_DIR", "configs/test_configs"))
-OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "data/annotated"))
+REDIS_URL       = os.getenv("REDIS_URL",    "redis://localhost:6379/0")
+CONFIGS_DIR     = Path(os.getenv("CONFIGS_DIR",  "configs/test_configs"))
+OUTPUT_DIR      = Path(os.getenv("OUTPUT_DIR",   "data/annotated"))
+FORCE_RERUN     = os.getenv("PIPELINE_FORCE_RERUN", "0") == "1"
 
 celery = Celery(
     "vigour_worker",
@@ -49,84 +57,108 @@ def process_clip(
 
     Stages: Ingest → Detect → Track → Pose → OCR → Calibrate → Extract → Output
 
-    Args:
-        job_id:          Unique job identifier.
-        video_path:      Absolute path to uploaded video.
-        test_type:       Which metric extractor to run.
-        config_override: Optional JSON string with geometry config overrides.
-
-    Returns:
-        List of serialised TestResult dicts.
+    Each stage checks PipelineCache first — only runs if no valid cache entry.
     """
+    from pipeline.cache import PipelineCache
+
     self.update_state(state="STARTED", meta={"stage": "initialising"})
     logger.info("[%s] Starting pipeline for %s (test=%s)", job_id, video_path, test_type)
 
-    # Load geometry config
+    cache = PipelineCache(job_id=job_id)
+
+    # ── Load geometry config ─────────────────────────────────────────────────
     config_path = CONFIGS_DIR / f"{test_type}.json"
     if config_path.exists():
         with open(config_path) as f:
             geometry_config = json.load(f)
     else:
-        logger.warning("No config file for %s. Using empty config.", test_type)
+        logger.warning("No config for test type '%s'. Using empty config.", test_type)
         geometry_config = {}
 
     if config_override:
-        overrides = json.loads(config_override)
-        geometry_config.update(overrides)
+        geometry_config.update(json.loads(config_override))
 
-    # --- Stage 1: Ingest ---
-    self.update_state(state="STARTED", meta={"stage": "ingestion"})
-    from pipeline.ingest import extract_frames
     target_fps = geometry_config.get("capture_fps", 15)
-    frames_gen = extract_frames(video_path, target_fps=target_fps)
 
-    raw_frames, frame_indices = [], []
-    for frame_idx, frame, _ in frames_gen:
-        raw_frames.append(frame)
-        frame_indices.append(frame_idx)
+    # ── Stage 1: Ingest ──────────────────────────────────────────────────────
+    self.update_state(state="STARTED", meta={"stage": "ingestion"})
+    if not FORCE_RERUN and cache.has("ingest"):
+        logger.info("[%s] Cache hit: ingest", job_id)
+        frame_indices, timestamps_s = cache.load_ingest()
+        # Raw frames must be re-read (not cached — too large)
+        from pipeline.ingest import extract_frames
+        raw_frames = [f for _, f, _ in extract_frames(video_path, target_fps=target_fps)]
+    else:
+        from pipeline.ingest import extract_frames
+        raw_frames, frame_indices, timestamps_s = [], [], []
+        for fi, frame, ts in extract_frames(video_path, target_fps=target_fps):
+            raw_frames.append(frame)
+            frame_indices.append(fi)
+            timestamps_s.append(ts)
+        cache.save_ingest(frame_indices, timestamps_s, test_type=test_type)
 
-    logger.info("[%s] Ingested %d frames.", job_id, len(raw_frames))
+    logger.info("[%s] %d frames ready.", job_id, len(raw_frames))
 
-    # --- Stage 2: Detect ---
+    # ── Stage 2: Detect ──────────────────────────────────────────────────────
     self.update_state(state="STARTED", meta={"stage": "detection"})
-    from pipeline.detect import PersonDetector
-    detector = PersonDetector()
-    all_detections = []
-    for i, frame in enumerate(raw_frames):
-        dets = detector.detect(frame)
-        for d in dets:
-            d.frame_idx = frame_indices[i]
-        all_detections.append(dets)
+    if not FORCE_RERUN and cache.has("detect"):
+        logger.info("[%s] Cache hit: detect", job_id)
+        all_detections = cache.load_detections()
+    else:
+        from pipeline.detect import PersonDetector
+        detector = PersonDetector()
+        all_detections = []
+        for i, frame in enumerate(raw_frames):
+            dets = detector.detect(frame)
+            for d in dets:
+                d.frame_idx = frame_indices[i]
+            all_detections.append(dets)
+        cache.save_detections(all_detections)
 
-    # --- Stage 3: Track ---
+    # ── Stage 3: Track ───────────────────────────────────────────────────────
     self.update_state(state="STARTED", meta={"stage": "tracking"})
-    from pipeline.track import PersonTracker
-    tracker = PersonTracker()
-    all_tracks = []
-    for i, (frame, dets) in enumerate(zip(raw_frames, all_detections)):
-        tracks = tracker.update(dets, frame_idx=frame_indices[i])
-        all_tracks.append(tracks)
+    if not FORCE_RERUN and cache.has("track"):
+        logger.info("[%s] Cache hit: track", job_id)
+        all_tracks = cache.load_tracks()
+    else:
+        from pipeline.track import PersonTracker
+        tracker = PersonTracker()
+        all_tracks = []
+        for i, (frame, dets) in enumerate(zip(raw_frames, all_detections)):
+            tracks = tracker.update(dets, frame_idx=frame_indices[i])
+            all_tracks.append(tracks)
+        cache.save_tracks(all_tracks)
 
-    # --- Stage 4: Pose ---
+    # ── Stage 4: Pose ────────────────────────────────────────────────────────
     self.update_state(state="STARTED", meta={"stage": "pose_estimation"})
-    from pipeline.pose import PoseEstimator
-    pose_estimator = PoseEstimator()
-    all_poses = []
-    for frame, tracks in zip(raw_frames, all_tracks):
-        poses = pose_estimator.estimate_batch(frame, tracks)
-        all_poses.append(poses)
+    if not FORCE_RERUN and cache.has("pose"):
+        logger.info("[%s] Cache hit: pose", job_id)
+        all_poses = cache.load_poses()
+    else:
+        from pipeline.pose import PoseEstimator
+        estimator = PoseEstimator()
+        all_poses = []
+        for frame, tracks in zip(raw_frames, all_tracks):
+            poses = estimator.estimate_batch(frame, tracks)
+            all_poses.append(poses)
+        cache.save_poses(all_poses)
 
-    # --- Stage 5: OCR ---
+    # ── Stage 5: OCR ─────────────────────────────────────────────────────────
     self.update_state(state="STARTED", meta={"stage": "ocr"})
-    from pipeline.ocr import BibOCR, resolve_bibs
-    ocr = BibOCR()
-    frame_readings = []
-    for i, (frame, tracks) in enumerate(zip(raw_frames, all_tracks)):
-        if i % 5 == 0:  # sample every 5th frame
-            readings = ocr.read_frame(frame, tracks)
-            frame_readings.append(readings)
+    if not FORCE_RERUN and cache.has("ocr"):
+        logger.info("[%s] Cache hit: ocr", job_id)
+        frame_readings, resolved = cache.load_ocr()
+    else:
+        from pipeline.ocr import BibOCR, resolve_bibs
+        ocr = BibOCR()
+        frame_readings = []
+        for i, (frame, tracks) in enumerate(zip(raw_frames, all_tracks)):
+            if i % 5 == 0:
+                readings = ocr.read_frame(frame, tracks)
+                frame_readings.append(readings)
+        resolved = resolve_bibs(frame_readings)
+        cache.save_ocr(frame_readings, resolved)
 
-    resolved = resolve_bibs(frame_readings)
     # Attach bib numbers to track objects
     for frame_tracks in all_tracks:
         for track in frame_tracks:
@@ -134,66 +166,84 @@ def process_clip(
             track.bib_number = bib
             track.bib_confidence = conf
 
-    # --- Stage 6: Calibrate ---
+    # ── Stage 6: Calibrate ───────────────────────────────────────────────────
     self.update_state(state="STARTED", meta={"stage": "calibration"})
-    from pipeline.calibrate import Calibrator
-    calibrator = Calibrator()
-    first_frame = raw_frames[0] if raw_frames else None
-    world_coords = geometry_config.get("cone_world_coords_cm", [])
-
-    if first_frame is not None and world_coords:
-        calibration = calibrator.calibrate_homography(first_frame, world_coords)
-    elif first_frame is not None:
-        calibration = calibrator.calibrate_single_axis(first_frame)
+    if not FORCE_RERUN and cache.has("calibrate"):
+        logger.info("[%s] Cache hit: calibrate", job_id)
+        calibration = cache.load_calibration()
     else:
+        from pipeline.calibrate import Calibrator
         from pipeline.models import CalibrationResult
-        import numpy as np
-        calibration = CalibrationResult(
-            method="single_axis",
-            homography_matrix=None,
-            pixels_per_cm=None,
-            cone_positions_px=[],
-            cone_positions_world=[],
-            reprojection_error_px=float("inf"),
-            is_valid=False,
-        )
+        calibrator = Calibrator()
+        first_frame = raw_frames[0] if raw_frames else None
+        world_coords = geometry_config.get("cone_world_coords_cm", [])
+        if first_frame is not None and world_coords:
+            calibration = calibrator.calibrate_homography(first_frame, world_coords)
+        elif first_frame is not None:
+            calibration = calibrator.calibrate_single_axis(first_frame)
+        else:
+            import numpy as np
+            calibration = CalibrationResult(
+                method="single_axis",
+                homography_matrix=None,
+                pixels_per_cm=None,
+                cone_positions_px=[],
+                cone_positions_world=[],
+                reprojection_error_px=float("inf"),
+                is_valid=False,
+            )
+        cache.save_calibration(calibration)
 
-    # --- Stage 7: Extract ---
+    # ── Stage 7: Extract ─────────────────────────────────────────────────────
     self.update_state(state="STARTED", meta={"stage": "metric_extraction"})
-    extractor = _get_extractor(test_type, geometry_config, calibration)
-    results = extractor.extract(all_tracks, all_poses, raw_frames)
+    if not FORCE_RERUN and cache.has("results"):
+        logger.info("[%s] Cache hit: results", job_id)
+        results = cache.load_results()
+    else:
+        extractor = _get_extractor(test_type, geometry_config, calibration)
+        results = extractor.extract(all_tracks, all_poses, raw_frames)
+        cache.save_results(results)
 
-    # --- Stage 8: Output ---
+    # ── Stage 8: Output (annotated video + JSON) ─────────────────────────────
     self.update_state(state="STARTED", meta={"stage": "output"})
-    from pipeline.output import write_results_json, AnnotatedVideoWriter
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    from pipeline.output import write_results_json
     json_path = OUTPUT_DIR / f"{job_id}_results.json"
     write_results_json(results, json_path)
 
+    from pipeline.visualise import PipelineVisualiser, VisOptions
     annotated_path = OUTPUT_DIR / f"{job_id}_annotated.mp4"
-    writer = AnnotatedVideoWriter(annotated_path)
-    writer.open()
-    for frame, tracks, poses in zip(raw_frames, all_tracks, all_poses):
-        writer.write_frame(frame, tracks, poses)
-    writer.close()
+    vis_opts = VisOptions(
+        show_calibration_grid=calibration.is_valid,
+        trace_history_frames=geometry_config.get("trace_history_frames", 60),
+    )
+    with PipelineVisualiser(annotated_path, test_type=test_type, fps=target_fps, options=vis_opts) as vis:
+        for frame, tracks, poses, ts in zip(raw_frames, all_tracks, all_poses, timestamps_s):
+            vis.write_frame(frame, tracks, poses, calibration, results, timestamp_s=ts)
 
-    logger.info("[%s] Pipeline complete. %d results.", job_id, len(results))
+    logger.info(
+        "[%s] Pipeline complete. %d results. Video: %s",
+        job_id, len(results), annotated_path,
+    )
     return [asdict(r) for r in results]
 
 
+# ── Extractor factory ────────────────────────────────────────────────────────
+
 def _get_extractor(test_type: str, config: dict, calibration):
     from pipeline.tests.explosiveness import ExplosivenessExtractor
-    from pipeline.tests.sprint import SprintExtractor
-    from pipeline.tests.shuttle import ShuttleExtractor
-    from pipeline.tests.agility import AgilityExtractor
-    from pipeline.tests.balance import BalanceExtractor
+    from pipeline.tests.sprint       import SprintExtractor
+    from pipeline.tests.shuttle      import ShuttleExtractor
+    from pipeline.tests.agility      import AgilityExtractor
+    from pipeline.tests.balance      import BalanceExtractor
 
     mapping = {
         "explosiveness": ExplosivenessExtractor,
-        "speed": SprintExtractor,
-        "fitness": ShuttleExtractor,
-        "agility": AgilityExtractor,
-        "balance": BalanceExtractor,
+        "speed":         SprintExtractor,
+        "fitness":       ShuttleExtractor,
+        "agility":       AgilityExtractor,
+        "balance":       BalanceExtractor,
     }
     cls = mapping.get(test_type)
     if cls is None:
