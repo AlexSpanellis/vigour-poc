@@ -11,6 +11,13 @@ Cache behaviour (controlled by PIPELINE_FORCE_RERUN env var):
     - Set PIPELINE_FORCE_RERUN=1 to bypass all caches and re-run every stage.
     - The /cache/{job_id} DELETE endpoint (api/main.py) invalidates from a
       given stage onwards, then re-runs from that point on next trigger.
+
+Stage toggles:
+    ENABLE_POSE=0   — Skip pose estimation (speeds up runs without GPU; pose-based
+                      metrics will be unavailable; balance extractor is disabled).
+    ENABLE_OCR=0    — Skip OCR / bib resolution (all bib_numbers remain None;
+                      tracks are still reported with track_id-based identity).
+    Both can also be passed as per-job parameters to process_clip().
 """
 from __future__ import annotations
 
@@ -24,10 +31,14 @@ from celery import Celery
 
 logger = logging.getLogger(__name__)
 
-REDIS_URL       = os.getenv("REDIS_URL",    "redis://localhost:6379/0")
-CONFIGS_DIR     = Path(os.getenv("CONFIGS_DIR",  "configs/test_configs"))
-OUTPUT_DIR      = Path(os.getenv("OUTPUT_DIR",   "data/annotated"))
-FORCE_RERUN     = os.getenv("PIPELINE_FORCE_RERUN", "0") == "1"
+REDIS_URL   = os.getenv("REDIS_URL",    "redis://localhost:6379/0")
+CONFIGS_DIR = Path(os.getenv("CONFIGS_DIR",  "configs/test_configs"))
+OUTPUT_DIR  = Path(os.getenv("OUTPUT_DIR",   "data/annotated"))
+FORCE_RERUN = os.getenv("PIPELINE_FORCE_RERUN", "0") == "1"
+
+# ── Stage toggles (env defaults; can be overridden per-job call) ─────────────
+_DEFAULT_ENABLE_POSE = os.getenv("ENABLE_POSE", "1") == "1"
+_DEFAULT_ENABLE_OCR  = os.getenv("ENABLE_OCR",  "1") == "1"
 
 celery = Celery(
     "vigour_worker",
@@ -51,18 +62,39 @@ def process_clip(
     video_path: str,
     test_type: str,
     config_override: str | None = None,
+    enable_pose: bool | None = None,
+    enable_ocr: bool | None = None,
 ) -> list[dict]:
     """
     Full pipeline execution for a single video clip.
 
-    Stages: Ingest → Detect → Track → Pose → OCR → Calibrate → Extract → Output
+    Stages: Ingest → Detect → Track → [Pose] → [OCR] → Calibrate → Extract → Output
 
     Each stage checks PipelineCache first — only runs if no valid cache entry.
+
+    Args:
+        job_id:          Unique job identifier (UUID).
+        video_path:      Absolute path to uploaded video clip.
+        test_type:       One of: explosiveness, speed, fitness, agility, balance.
+        config_override: Optional JSON string to override geometry config values.
+        enable_pose:     Override ENABLE_POSE env var for this job. Default: env setting.
+        enable_ocr:      Override ENABLE_OCR env var for this job. Default: env setting.
     """
     from pipeline.cache import PipelineCache
 
-    self.update_state(state="STARTED", meta={"stage": "initialising"})
-    logger.info("[%s] Starting pipeline for %s (test=%s)", job_id, video_path, test_type)
+    # Resolve stage toggles (per-job param takes priority over env default)
+    run_pose = _DEFAULT_ENABLE_POSE if enable_pose is None else bool(enable_pose)
+    run_ocr  = _DEFAULT_ENABLE_OCR  if enable_ocr  is None else bool(enable_ocr)
+
+    self.update_state(state="STARTED", meta={
+        "stage": "initialising",
+        "enable_pose": run_pose,
+        "enable_ocr": run_ocr,
+    })
+    logger.info(
+        "[%s] Starting pipeline for %s (test=%s, pose=%s, ocr=%s)",
+        job_id, video_path, test_type, run_pose, run_ocr,
+    )
 
     cache = PipelineCache(job_id=job_id)
 
@@ -129,35 +161,43 @@ def process_clip(
             all_tracks.append(tracks)
         cache.save_tracks(all_tracks)
 
-    # ── Stage 4: Pose ────────────────────────────────────────────────────────
-    self.update_state(state="STARTED", meta={"stage": "pose_estimation"})
-    if not FORCE_RERUN and cache.has("pose"):
-        logger.info("[%s] Cache hit: pose", job_id)
-        all_poses = cache.load_poses()
+    # ── Stage 4: Pose (optional) ─────────────────────────────────────────────
+    self.update_state(state="STARTED", meta={"stage": "pose_estimation" if run_pose else "pose_skipped"})
+    if run_pose:
+        if not FORCE_RERUN and cache.has("pose"):
+            logger.info("[%s] Cache hit: pose", job_id)
+            all_poses = cache.load_poses()
+        else:
+            from pipeline.pose import PoseEstimator
+            estimator = PoseEstimator()
+            all_poses = []
+            for frame, tracks in zip(raw_frames, all_tracks):
+                poses = estimator.estimate_batch(frame, tracks)
+                all_poses.append(poses)
+            cache.save_poses(all_poses)
     else:
-        from pipeline.pose import PoseEstimator
-        estimator = PoseEstimator()
-        all_poses = []
-        for frame, tracks in zip(raw_frames, all_tracks):
-            poses = estimator.estimate_batch(frame, tracks)
-            all_poses.append(poses)
-        cache.save_poses(all_poses)
+        logger.info("[%s] Pose estimation DISABLED (enable_pose=False)", job_id)
+        all_poses = [[] for _ in raw_frames]  # empty pose list per frame
 
-    # ── Stage 5: OCR ─────────────────────────────────────────────────────────
-    self.update_state(state="STARTED", meta={"stage": "ocr"})
-    if not FORCE_RERUN and cache.has("ocr"):
-        logger.info("[%s] Cache hit: ocr", job_id)
-        frame_readings, resolved = cache.load_ocr()
+    # ── Stage 5: OCR (optional) ──────────────────────────────────────────────
+    self.update_state(state="STARTED", meta={"stage": "ocr" if run_ocr else "ocr_skipped"})
+    if run_ocr:
+        if not FORCE_RERUN and cache.has("ocr"):
+            logger.info("[%s] Cache hit: ocr", job_id)
+            frame_readings, resolved = cache.load_ocr()
+        else:
+            from pipeline.ocr import BibOCR, resolve_bibs
+            ocr = BibOCR()
+            frame_readings = []
+            for i, (frame, tracks) in enumerate(zip(raw_frames, all_tracks)):
+                if i % 5 == 0:
+                    readings = ocr.read_frame(frame, tracks)
+                    frame_readings.append(readings)
+            resolved = resolve_bibs(frame_readings)
+            cache.save_ocr(frame_readings, resolved)
     else:
-        from pipeline.ocr import BibOCR, resolve_bibs
-        ocr = BibOCR()
-        frame_readings = []
-        for i, (frame, tracks) in enumerate(zip(raw_frames, all_tracks)):
-            if i % 5 == 0:
-                readings = ocr.read_frame(frame, tracks)
-                frame_readings.append(readings)
-        resolved = resolve_bibs(frame_readings)
-        cache.save_ocr(frame_readings, resolved)
+        logger.info("[%s] OCR DISABLED (enable_ocr=False) — bibs will be unresolved", job_id)
+        resolved = {}  # no bib assignments; tracks keep bib_number=None
 
     # Attach bib numbers to track objects
     for frame_tracks in all_tracks:
@@ -200,8 +240,15 @@ def process_clip(
         logger.info("[%s] Cache hit: results", job_id)
         results = cache.load_results()
     else:
-        extractor = _get_extractor(test_type, geometry_config, calibration)
-        results = extractor.extract(all_tracks, all_poses, raw_frames)
+        if not run_pose and test_type == "balance":
+            logger.warning(
+                "[%s] Balance test requires pose — results will be empty (enable_pose=False).",
+                job_id,
+            )
+            results = []
+        else:
+            extractor = _get_extractor(test_type, geometry_config, calibration)
+            results = extractor.extract(all_tracks, all_poses, raw_frames)
         cache.save_results(results)
 
     # ── Stage 8: Output (annotated video + JSON) ─────────────────────────────
@@ -216,6 +263,7 @@ def process_clip(
     annotated_path = OUTPUT_DIR / f"{job_id}_annotated.mp4"
     vis_opts = VisOptions(
         show_calibration_grid=calibration.is_valid,
+        show_skeleton=run_pose,          # hide skeleton layer when pose is off
         trace_history_frames=geometry_config.get("trace_history_frames", 60),
     )
     with PipelineVisualiser(annotated_path, test_type=test_type, fps=target_fps, options=vis_opts) as vis:
