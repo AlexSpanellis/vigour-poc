@@ -1,0 +1,21 @@
+FROM nvcr.io/nvidia/pytorch:24.01-py3
+
+WORKDIR /app
+
+# System dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libglib2.0-0 libsm6 libxrender1 libxext6 ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install mmcv / mmengine via openmim
+RUN pip install openmim && mim install mmcv mmengine
+
+COPY . .
+
+ENV PYTHONPATH=/app
+
+CMD ["celery", "-A", "worker.celery_app", "worker", "--concurrency=1", "--loglevel=info"]

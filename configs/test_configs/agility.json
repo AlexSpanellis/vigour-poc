@@ -1,0 +1,10 @@
+{
+  "test_type": "agility",
+  "drill_pattern": "t_drill",
+  "cone_positions_m": [[0, 0], [5, 0], [5, -3], [5, 3]],
+  "camera_height_m": 2.5,
+  "num_attempts": 3,
+  "cone_touch_threshold_cm": 80,
+  "start_zone_cm": 50,
+  "capture_fps": 15
+}

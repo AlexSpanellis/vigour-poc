@@ -1,0 +1,13 @@
+{
+  "test_type": "explosiveness",
+  "camera_position": "front_facing",
+  "camera_height_m": 2.0,
+  "camera_distance_m": 5.0,
+  "reference_height_cm": 23.0,
+  "student_spacing_m": 1.5,
+  "num_attempts": 3,
+  "jump_min_height_cm": 5.0,
+  "jump_threshold_px": 15,
+  "baseline_frames": 30,
+  "capture_fps": 15
+}

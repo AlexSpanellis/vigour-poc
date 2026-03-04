@@ -1,0 +1,11 @@
+{
+  "test_type": "balance",
+  "camera_height_m": 1.5,
+  "camera_distance_m": 5.0,
+  "camera_position": "front_facing",
+  "max_duration_s": 60,
+  "lean_threshold_deg": 15,
+  "ankle_lift_threshold_px": 20,
+  "baseline_frames": 30,
+  "capture_fps": 15
+}

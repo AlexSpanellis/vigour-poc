@@ -1,0 +1,9 @@
+{
+  "test_type": "speed",
+  "sprint_distance_m": 5.0,
+  "camera_angle_deg": 45,
+  "camera_height_m": 1.5,
+  "camera_distance_m": 7.0,
+  "num_attempts": 3,
+  "capture_fps": 60
+}
