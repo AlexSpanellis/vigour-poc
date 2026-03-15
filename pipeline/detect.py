@@ -63,6 +63,37 @@ class PersonDetector:
                 "ultralytics not installed. Run: pip install ultralytics"
             )
 
+    def _predict(self, source, conf: float):
+        """Run YOLO predict; fall back to CPU if CUDA device is unsupported (e.g. RTX 50xx / sm_120)."""
+        try:
+            return self._model.predict(
+                source=source,
+                conf=conf,
+                iou=self.nms_threshold,
+                classes=[self.PERSON_CLASS_ID],
+                verbose=False,
+                device=self.device,
+            )
+        except RuntimeError as e:
+            if self.device == "cuda" and (
+                "no kernel image is available" in str(e)
+                or "not compatible" in str(e).lower()
+            ):
+                logger.warning(
+                    "CUDA device not supported by this PyTorch build (e.g. RTX 5080/5090 sm_120). "
+                    "Falling back to CPU for detection."
+                )
+                self.device = "cpu"
+                return self._model.predict(
+                    source=source,
+                    conf=conf,
+                    iou=self.nms_threshold,
+                    classes=[self.PERSON_CLASS_ID],
+                    verbose=False,
+                    device="cpu",
+                )
+            raise
+
     def detect(self, frame: np.ndarray, conf_threshold: float | None = None) -> list[Detection]:
         """
         Run person detection on a single BGR frame.
@@ -78,14 +109,7 @@ class PersonDetector:
             self._load_model()
 
         conf = conf_threshold if conf_threshold is not None else self.conf_threshold
-        results = self._model.predict(
-            source=frame,
-            conf=conf,
-            iou=self.nms_threshold,
-            classes=[self.PERSON_CLASS_ID],
-            verbose=False,
-            device=self.device,
-        )
+        results = self._predict(frame, conf)
 
         detections: list[Detection] = []
         for result in results:
@@ -114,14 +138,7 @@ class PersonDetector:
             self._load_model()
 
         conf = conf_threshold if conf_threshold is not None else self.conf_threshold
-        results = self._model.predict(
-            source=frames,
-            conf=conf,
-            iou=self.nms_threshold,
-            classes=[self.PERSON_CLASS_ID],
-            verbose=False,
-            device=self.device,
-        )
+        results = self._predict(frames, conf)
 
         batch_detections: list[list[Detection]] = []
         for result in results:

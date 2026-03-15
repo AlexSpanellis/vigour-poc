@@ -34,6 +34,17 @@ class ShuttleExtractor(BaseMetricExtractor):
             return False
         return True
 
+    def _get_pixel_to_world_matrix(self) -> np.ndarray | None:
+        """Return 3×3 matrix for pixel→world (cm). Homography if available, else scale from single_axis."""
+        H = self.calibration.homography_matrix
+        if H is not None:
+            return H
+        px_cm = self.calibration.pixels_per_cm
+        if px_cm is not None and px_cm > 0:
+            s = 1.0 / px_cm
+            return np.array([[s, 0, 0], [0, s, 0], [0, 0, 1]], dtype=np.float32)
+        return None
+
     def extract(
         self,
         tracks: list[list[Track]],
@@ -48,7 +59,13 @@ class ShuttleExtractor(BaseMetricExtractor):
         num_sets = self.config.get("num_sets", 3)
         rest_between_sets_s = self.config.get("rest_between_sets_s", 30)
         reversal_proximity_cm = self.config.get("reversal_proximity_cm", 30)
-        H = self.calibration.homography_matrix
+        H = self._get_pixel_to_world_matrix()
+        if H is None:
+            logger.warning(
+                "Shuttle extractor requires homography or single_axis calibration with pixels_per_cm. "
+                "Skipping extraction."
+            )
+            return []
 
         import cv2
 

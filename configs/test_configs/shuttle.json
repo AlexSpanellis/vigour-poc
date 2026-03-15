@@ -1,7 +1,13 @@
 {
   "test_type": "fitness",
   "cone_count": 6,
-  "cone_spacing_m": 2.0,
+  "cone_spacing_m": 4.0,
+  "cone_layout": {
+    "pattern": "linear",
+    "first_cone_cm": [0, 0],
+    "spacing_cm": 400,
+    "direction": "x"
+  },
   "set_duration_s": 15,
   "num_sets": 3,
   "rest_between_sets_s": 30,

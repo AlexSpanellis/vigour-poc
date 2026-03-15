@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from pipeline.models import CalibrationResult, Detection, Pose, TestResult, Track
-from pipeline.visualise import PipelineVisualiser, VisOptions
+from pipeline.visualise import PipelineVisualiser, VisOptions, render_top_down_view
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -179,6 +179,37 @@ def test_hud_not_drawn_when_no_results():
     calib = _make_calibration()
     canvas = PipelineVisualiser.annotate_frame(
         frame=frame, tracks=[track], poses=[], calibration=calib, results=[], test_type="speed"
+    )
+    assert canvas.shape == frame.shape
+
+
+def test_render_top_down_view_cones_only():
+    """Top-down view with calibration only (no tracks/poses) returns valid canvas."""
+    calib = _make_calibration()
+    canvas = render_top_down_view(calib, tracks=[], poses=[], size=(200, 200))
+    assert canvas.shape == (200, 200, 3)
+    assert canvas.dtype == np.uint8
+
+
+def test_render_top_down_view_with_poses():
+    """Top-down view with tracks and poses returns valid canvas."""
+    calib = _make_calibration()
+    track = _make_track()
+    pose = _make_pose()
+    canvas = render_top_down_view(calib, tracks=[track], poses=[pose], size=(200, 200))
+    assert canvas.shape == (200, 200, 3)
+
+
+def test_annotate_frame_with_top_down_view():
+    """Annotate with show_top_down_view=True does not crash."""
+    frame = _blank_frame(h=200, w=320)
+    track = _make_track()
+    pose = _make_pose()
+    calib = _make_calibration()
+    opts = VisOptions(show_top_down_view=True)
+    canvas = PipelineVisualiser.annotate_frame(
+        frame=frame, tracks=[track], poses=[pose], calibration=calib,
+        results=[], test_type="fitness", opts=opts,
     )
     assert canvas.shape == frame.shape
 

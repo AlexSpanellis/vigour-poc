@@ -60,17 +60,14 @@ class PersonTracker:
     def _load_tracker(self):
         """Initialise ByteTrack instance."""
         try:
-            # bytetracker pip package exposes BYTETracker
             from bytetracker import BYTETracker  # type: ignore
 
-            class _Args:
-                track_thresh = self.config["track_thresh"]
-                track_buffer = self.config["track_buffer"]
-                match_thresh = self.config["match_thresh"]
-                min_box_area = self.config["min_box_area"]
-                mot20 = False
-
-            self._tracker = BYTETracker(_Args(), frame_rate=self.config["frame_rate"])
+            self._tracker = BYTETracker(
+                track_thresh=self.config["track_thresh"],
+                track_buffer=self.config["track_buffer"],
+                match_thresh=self.config["match_thresh"],
+                frame_rate=self.config["frame_rate"],
+            )
             logger.info("ByteTrack initialised with config: %s", self.config)
         except ImportError:
             logger.warning(
@@ -97,31 +94,39 @@ class PersonTracker:
         import numpy as np
 
         if not detections:
-            online_targets = self._tracker.update(
-                np.empty((0, 5)), [1080, 1920], [1080, 1920]
-            )
+            # ByteTrack expects [x1, y1, x2, y2, score, class_id]; empty = 6 cols
+            dets_np = np.empty((0, 6), dtype=np.float32)
         else:
-            # ByteTrack expects [x1, y1, x2, y2, score]
+            # ByteTrack expects [x1, y1, x2, y2, score, class_id]
             dets_np = np.array(
-                [[*d.bbox, d.confidence] for d in detections], dtype=np.float32
+                [[*d.bbox, d.confidence, float(d.class_id)] for d in detections],
+                dtype=np.float32,
             )
-            online_targets = self._tracker.update(dets_np, [1080, 1920], [1080, 1920])
+        # This bytetracker expects PyTorch tensors (it calls .numpy() on slices)
+        import torch
+        dets_tensor = torch.from_numpy(dets_np)
+        online_outputs = self._tracker.update(dets_tensor, None)
 
+        # BYTETracker returns np.array of shape (N, 7): [x1, y1, x2, y2, track_id, cls, score]
         tracks: list[Track] = []
-        for t in online_targets:
-            tlwh = t.tlwh
-            x1, y1 = tlwh[0], tlwh[1]
-            x2, y2 = x1 + tlwh[2], y1 + tlwh[3]
-            tracks.append(
-                Track(
-                    track_id=int(t.track_id),
-                    bbox=(x1, y1, x2, y2),
-                    frame_idx=frame_idx,
-                    is_confirmed=t.is_activated,
-                    bib_number=None,
-                    bib_confidence=0.0,
+        if online_outputs.size > 0:
+            # ensure 2D: (0,) -> (0, 7)
+            if online_outputs.ndim == 1:
+                online_outputs = online_outputs.reshape(-1, 7)
+            for row in online_outputs:
+                x1, y1, x2, y2 = float(row[0]), float(row[1]), float(row[2]), float(row[3])
+                track_id = int(row[4])
+                is_confirmed = True  # output_stracks are activated only
+                tracks.append(
+                    Track(
+                        track_id=track_id,
+                        bbox=(x1, y1, x2, y2),
+                        frame_idx=frame_idx,
+                        is_confirmed=is_confirmed,
+                        bib_number=None,
+                        bib_confidence=0.0,
+                    )
                 )
-            )
         return tracks
 
     def reset(self):

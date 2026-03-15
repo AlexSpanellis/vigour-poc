@@ -214,11 +214,21 @@ def process_clip(
     else:
         from pipeline.calibrate import Calibrator
         from pipeline.models import CalibrationResult
-        calibrator = Calibrator()
+        calibrator = Calibrator(
+            detector_backend=geometry_config.get("calibration_detector", "sam3_prompt"),
+            sam_model_path=geometry_config.get("calibration_model", "sam3.pt"),
+            sam_prompt=geometry_config.get("calibration_prompt", "training cone"),
+            min_confidence=geometry_config.get("calibration_min_confidence", 0.5),
+        )
         first_frame = raw_frames[0] if raw_frames else None
         world_coords = geometry_config.get("cone_world_coords_cm", [])
+        cone_layout = dict(geometry_config.get("cone_layout", {}))
+        if "cone_count" not in cone_layout and "cone_count" in geometry_config:
+            cone_layout["cone_count"] = geometry_config["cone_count"]
         if first_frame is not None and world_coords:
             calibration = calibrator.calibrate_homography(first_frame, world_coords)
+        elif first_frame is not None and cone_layout and cone_layout.get("pattern"):
+            calibration = calibrator.calibrate_from_layout(first_frame, cone_layout)
         elif first_frame is not None:
             calibration = calibrator.calibrate_single_axis(first_frame)
         else:

@@ -1,11 +1,11 @@
 """
-Unit tests for Calibrator — pixel_to_world transform.
+Unit tests for Calibrator — pixel_to_world transform, cone filtering.
 Run: pytest tests/unit/test_calibrate.py
 """
 import numpy as np
 import pytest
 
-from pipeline.calibrate import Calibrator
+from pipeline.calibrate import Calibrator, ConeDetection
 from pipeline.models import CalibrationResult
 
 
@@ -57,3 +57,27 @@ def test_invalid_calibration_raises():
     )
     with pytest.raises(ValueError):
         calibrator.pixel_to_world((0, 0), result)
+
+
+def test_filter_and_select_cones_linear():
+    """Filter by confidence and select N cones along fitted line."""
+    calibrator = Calibrator(min_confidence=0.6)
+    # 8 cones in a line (y=100, x from 50 to 400), plus 2 low-confidence outliers
+    cones = [
+        ConeDetection(50 + i * 50, 100, "yellow", 0.9, None) for i in range(8)
+    ] + [
+        ConeDetection(250, 50, "yellow", 0.3, None),   # low conf, off line
+        ConeDetection(300, 150, "yellow", 0.2, None),  # low conf
+    ]
+    selected = calibrator._filter_and_select_cones_for_layout(
+        cones,
+        {"pattern": "linear", "direction": "x", "cone_count": 6},
+        6,
+    )
+    assert len(selected) == 6
+    # Low-confidence cones should be dropped; selection follows line
+    scores = [c.score for c in selected]
+    assert all(s >= 0.6 for s in scores)
+    # Order should follow line (increasing x)
+    xs = [c.cx for c in selected]
+    assert xs == sorted(xs)

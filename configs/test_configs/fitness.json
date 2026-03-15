@@ -1,0 +1,28 @@
+{
+  "test_type": "fitness",
+  "cone_count": 42,
+  "cone_spacing_m": 4.0,
+  "calibration_detector": "sam3_prompt",
+  "calibration_model": "sam3.pt",
+  "calibration_prompt": "training cone",
+  "calibration_min_confidence": 0.4,
+  "cone_layout": {
+    "pattern": "grid",
+    "first_cone_cm": [0, 0],
+    "spacing_cm_x": 70,
+    "spacing_cm_y": 300,
+    "rows": 6,
+    "cols": 7,
+    "grid_fit_use_iterative": true,
+    "grid_fit_max_iters": 30,
+    "grid_fit_match_radius_px": 150,
+    "grid_fit_min_inliers": 10,
+    "grid_fit_use_confidence_weights": false
+  },
+  "set_duration_s": 15,
+  "num_sets": 3,
+  "rest_between_sets_s": 30,
+  "camera_height_m": 2.5,
+  "reversal_proximity_cm": 30,
+  "capture_fps": 15
+}

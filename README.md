@@ -47,13 +47,22 @@ source .venv/bin/activate       # Windows: .venv\Scripts\activate
 
 ### 2 — Install Python dependencies
 
-```bash
-pip install -r requirements.txt
+**mim** needs PyTorch installed first to detect your CUDA version and pick the right mmcv wheel. Install in this order:
 
-# RTMPose / mmpose extras (required for pose estimation):
+```bash
+pip install "setuptools==60.2.0"
+pip install torch==2.4.0 torchvision==0.19.0 --index-url https://download.pytorch.org/whl/cu121
 pip install openmim
-mim install mmcv mmengine
+mim install mmcv==2.2.0 mmengine
+pip install -r requirements.txt
+pip install bytetracker --no-deps
 ```
+
+- `torch` must be installed before `mim install mmcv mmengine` (mim uses it to select the correct pre-built wheel).
+- With mmcv/mmengine already present, `pip install -r requirements.txt` will not rebuild mmcv.
+- The last line installs ByteTrack without pulling `lap==0.4.0` (which does not build on Python 3.11).
+
+For a specific CUDA version, install PyTorch from [pytorch.org](https://pytorch.org) first, then run the rest.
 
 ### 3 — Configure environment variables
 
@@ -268,6 +277,42 @@ for frame in frames[:5]:
     dets = detector.detect(frame)
     print(dets)
 ```
+
+### Cone detection POC scripts (SAM vs YOLOX)
+
+Use these scripts to compare cone localization approaches on the same clip:
+
+```bash
+# 1) YOLOX ONNX cone detections
+python scripts/poc_cones_yolox.py \
+  --video data/raw_footage/agility_test.mp4 \
+  --model /path/to/yolox_cone.onnx \
+  --target-fps 10 \
+  --max-frames 300 \
+  --save-annotated \
+  --output-json data/cache/poc_yolox_cones.json
+
+# 2) SAM2/SAM3 cone proposals (Ultralytics SAM integration)
+python scripts/poc_cones_sam.py \
+  --video data/raw_footage/agility_test.mp4 \
+  --model sam3_b.pt \
+  --target-fps 10 \
+  --max-frames 300 \
+  --save-annotated \
+  --output-json data/cache/poc_sam_cones.json
+
+# 3) Compare both outputs
+python scripts/compare_cone_poc_results.py \
+  --a data/cache/poc_yolox_cones.json \
+  --b data/cache/poc_sam_cones.json \
+  --dist-threshold-px 25
+```
+
+Notes:
+- `poc_cones_sam.py` uses mask proposals + cone color/shape filtering (not class detection logits).
+- `poc_cones_yolox.py` assumes your YOLOX ONNX output is either decoded `[x1,y1,x2,y2,score,class]`
+  or standard `[cx,cy,w,h,obj,cls...]`.
+- For production, benchmark by calibration success/reprojection error, not only cone count agreement.
 
 ---
 

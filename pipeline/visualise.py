@@ -26,6 +26,7 @@ Overlay layers (all individually togglable via VisOptions):
     - Bounding boxes + track ID + bib number
     - Pose skeleton (COCO keypoints)
     - Calibration grid (projected cone positions, world axes, homography grid)
+    - Top-down world-coords view (cone + person positions in cm, inset)
     - Per-test overlays:
         explosiveness  — baseline floor line, jump apex marker, height annotation
         speed          — start/finish crossing lines, split timer
@@ -39,6 +40,7 @@ Overlay layers (all individually togglable via VisOptions):
 from __future__ import annotations
 
 import logging
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -46,6 +48,7 @@ from typing import Literal
 import cv2
 import numpy as np
 
+from pipeline.calibrate import Calibrator
 from pipeline.models import CalibrationResult, Pose, TestResult, Track
 
 logger = logging.getLogger(__name__)
@@ -87,6 +90,54 @@ KEYPOINT_PAIRS = [
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# H.264 video writer (universal encoding via ffmpeg)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _create_h264_writer(output_path: Path, width: int, height: int, fps: int):
+    """
+    Create a video writer that encodes to H.264 (Baseline, yuv420p) via ffmpeg.
+    Returns an object with write(frame) and release() methods.
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "rawvideo", "-pix_fmt", "bgr24",
+        "-s", f"{width}x{height}", "-r", str(fps),
+        "-i", "pipe:0",
+        "-c:v", "libx264", "-profile:v", "baseline", "-level", "3.1",
+        "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+        str(output_path),
+    ]
+    proc = subprocess.Popen(
+        cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+    )
+    if proc.stdin is None:
+        raise RuntimeError("ffmpeg stdin is None")
+
+    class H264Writer:
+        def write(self, frame: np.ndarray) -> bool:
+            if proc.poll() is not None:
+                return False
+            proc.stdin.write(np.ascontiguousarray(frame).tobytes())
+            return True
+
+        def release(self) -> None:
+            try:
+                proc.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+            proc.wait()
+            if proc.returncode != 0 and proc.stderr:
+                try:
+                    stderr = proc.stderr.read().decode(errors="replace")[:500]
+                    logger.warning("ffmpeg stderr: %s", stderr)
+                except Exception:
+                    pass
+
+    return H264Writer()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Visualisation options
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -100,9 +151,12 @@ class VisOptions:
     show_hud: bool = True
     show_frame_counter: bool = True
     show_flags: bool = True
+    show_top_down_view: bool = False
     skeleton_conf_threshold: float = 0.3
     # Path trace: how many frames of history to show per student
     trace_history_frames: int = 60
+    # Top-down view: size of the inset panel (width, height)
+    top_down_view_size: tuple[int, int] = (220, 220)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -127,7 +181,7 @@ class PipelineVisualiser:
         self.fps = fps
         self.opts = options or VisOptions()
 
-        self._writer: cv2.VideoWriter | None = None
+        self._writer: object | None = None  # H.264 writer (ffmpeg) or None
         self._frame_idx: int = 0
 
         # Per-track state
@@ -171,13 +225,10 @@ class PipelineVisualiser:
 
         Returns the annotated canvas (useful for notebook display).
         """
-        # Lazy-open writer once we know frame dimensions
+        # Lazy-open writer once we know frame dimensions (H.264 via ffmpeg for universal compatibility)
         if self._writer is None:
             h, w = frame.shape[:2]
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            self._writer = cv2.VideoWriter(
-                str(self.output_path), fourcc, self.fps, (w, h)
-            )
+            self._writer = _create_h264_writer(self.output_path, w, h, self.fps)
 
         canvas = self.annotate_frame(
             frame=frame,
@@ -251,6 +302,13 @@ class PipelineVisualiser:
         if opts.show_frame_counter:
             canvas = _draw_frame_counter(canvas, frame_idx, timestamp_s)
 
+        # Layer 8: top-down world-coords view (inset)
+        if opts.show_top_down_view and calibration.is_valid:
+            top_down = render_top_down_view(
+                calibration, tracks, poses, size=opts.top_down_view_size
+            )
+            canvas = _composite_top_down_inset(canvas, top_down)
+
         return canvas
 
     # ── Internal state helpers ────────────────────────────────────────────────
@@ -297,6 +355,170 @@ class PipelineVisualiser:
                     else:
                         # Rolling mean
                         self._ankle_baselines[track.track_id] = (prev + float(np.mean(ankle_ys))) / 2
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Top-down world-coords view
+# ──────────────────────────────────────────────────────────────────────────────
+
+def render_top_down_view(
+    calibration: CalibrationResult,
+    tracks: list[Track],
+    poses: list[Pose],
+    size: tuple[int, int] = (220, 220),
+    expected_cone_positions_world: list[tuple[float, float]] | None = None,
+) -> np.ndarray:
+    """
+    Render a top-down view in world coordinates (cm).
+    Shows cone positions and person positions (hip midpoint) using calibration.
+
+    If expected_cone_positions_world is provided (e.g. full grid from layout), those
+    are drawn as open circles and calibration.cone_positions_world as filled (matched cones).
+
+    Returns a BGR canvas of the given size. Usable standalone (e.g. in notebooks)
+    or as an inset overlay.
+    """
+    calibrator = Calibrator()
+    w_canvas, h_canvas = size
+
+    # Gather world positions for cones (matched / used for calibration)
+    cone_world: list[tuple[float, float]] = []
+    if calibration.cone_positions_world:
+        cone_world = list(calibration.cone_positions_world)
+    elif calibration.cone_positions_px:
+        try:
+            for cx, cy in calibration.cone_positions_px:
+                wx, wy = calibrator.pixel_to_world((float(cx), float(cy)), calibration)
+                cone_world.append((wx, wy))
+        except (ValueError, Exception):
+            pass
+
+    # Gather world positions for persons (hip midpoint)
+    pose_map = {p.track_id: p for p in poses}
+    person_world: list[tuple[float, float, int]] = []  # (x, y, track_id)
+    for track in tracks:
+        pose = pose_map.get(track.track_id)
+        if pose is None:
+            continue
+        kps = pose.keypoints
+        if kps[11, 2] > 0.3 and kps[12, 2] > 0.3:
+            hx = (kps[11, 0] + kps[12, 0]) / 2
+            hy = (kps[11, 1] + kps[12, 1]) / 2
+            try:
+                wx, wy = calibrator.pixel_to_world((float(hx), float(hy)), calibration)
+                person_world.append((wx, wy, track.track_id))
+            except (ValueError, Exception):
+                pass
+
+    # Bounding box in world coords (include expected grid so full layout is visible)
+    all_pts = cone_world + [(x, y) for x, y, _ in person_world]
+    if expected_cone_positions_world:
+        all_pts = all_pts + list(expected_cone_positions_world)
+    if not all_pts:
+        # No data: create a default view (e.g. 0–500 cm)
+        x_min, x_max = 0.0, 500.0
+        y_min, y_max = 0.0, 500.0
+    else:
+        xs = [p[0] for p in all_pts]
+        ys = [p[1] for p in all_pts]
+        pad = max(50.0, (max(xs) - min(xs) + max(ys) - min(ys)) * 0.15)
+        x_min, x_max = min(xs) - pad, max(xs) + pad
+        y_min, y_max = min(ys) - pad, max(ys) + pad
+        if x_max - x_min < 100:
+            x_max = x_min + 100
+        if y_max - y_min < 100:
+            y_max = y_min + 100
+
+    def world_to_canvas(x: float, y: float) -> tuple[int, int]:
+        # World Y increases "up" in typical court layout; canvas Y increases down
+        # Map world (x,y) to canvas: X→right, Y→down (flip world Y for top-down)
+        u = (x - x_min) / (x_max - x_min) if x_max > x_min else 0.5
+        v = (y_max - y) / (y_max - y_min) if y_max > y_min else 0.5  # flip Y
+        margin = 25
+        cw = w_canvas - 2 * margin
+        ch = h_canvas - 2 * margin
+        cx = int(margin + u * cw)
+        cy = int(margin + v * ch)
+        return (np.clip(cx, 0, w_canvas - 1), np.clip(cy, 0, h_canvas - 1))
+
+    # Create canvas (dark background)
+    canvas = np.full((h_canvas, w_canvas, 3), 35, dtype=np.uint8)
+
+    # Grid lines
+    for val in np.linspace(x_min, x_max, 6):
+        if x_min <= val <= x_max:
+            cx, cy = world_to_canvas(val, y_min)
+            cx2, cy2 = world_to_canvas(val, y_max)
+            cv2.line(canvas, (cx, cy), (cx2, cy2), (50, 50, 50), 1)
+    for val in np.linspace(y_min, y_max, 6):
+        if y_min <= val <= y_max:
+            cx, cy = world_to_canvas(x_min, val)
+            cx2, cy2 = world_to_canvas(x_max, val)
+            cv2.line(canvas, (cx, cy), (cx2, cy2), (50, 50, 50), 1)
+
+    # Axis labels
+    cv2.putText(canvas, "X (cm)", (w_canvas - 45, h_canvas - 5),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, COL["world_axis_x"], 1)
+    cv2.putText(canvas, "Y (cm)", (5, 12), cv2.FONT_HERSHEY_SIMPLEX, 0.35, COL["world_axis_y"], 1)
+
+    # Draw expected grid (open circles) when provided
+    if expected_cone_positions_world:
+        for x, y in expected_cone_positions_world:
+            cx, cy = world_to_canvas(x, y)
+            cv2.circle(canvas, (cx, cy), 6, (170, 170, 170), 1)
+
+    # Draw cones (matched / used for calibration — filled)
+    for x, y in cone_world:
+        cx, cy = world_to_canvas(x, y)
+        cv2.circle(canvas, (cx, cy), 6, COL["cone"], -1)
+        cv2.circle(canvas, (cx, cy), 8, COL["cone"], 1)
+
+    # Draw persons
+    for x, y, tid in person_world:
+        cx, cy = world_to_canvas(x, y)
+        cv2.circle(canvas, (cx, cy), 8, COL["confirmed_box"], -1)
+        cv2.circle(canvas, (cx, cy), 10, COL["confirmed_box"], 1)
+        cv2.putText(canvas, str(tid), (cx + 10, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.4, COL["hud_text"], 1)
+
+    # Title
+    cv2.putText(canvas, "Top-down (world)", (8, h_canvas - 8),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 180), 1)
+    if expected_cone_positions_world:
+        cv2.putText(
+            canvas,
+            f"expected={len(expected_cone_positions_world)} matched={len(cone_world)}",
+            (8, 28),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (190, 190, 190),
+            1,
+        )
+
+    return canvas
+
+
+def _composite_top_down_inset(main_canvas: np.ndarray, top_down: np.ndarray) -> np.ndarray:
+    """Composite the top-down view as an inset in the bottom-left of the main canvas."""
+    h, w = main_canvas.shape[:2]
+    th, tw = top_down.shape[:2]
+    margin = 12
+    # Scale down top-down if it doesn't fit
+    if th + 2 * margin > h or tw + 2 * margin > w:
+        scale = min((h - 2 * margin) / th, (w - 2 * margin) / tw)
+        if scale <= 0:
+            return main_canvas
+        new_tw = max(1, int(tw * scale))
+        new_th = max(1, int(th * scale))
+        top_down = cv2.resize(top_down, (new_tw, new_th))
+        th, tw = new_th, new_tw
+    x0 = margin
+    y0 = max(margin, h - th - margin)
+    # Semi-transparent border
+    cv2.rectangle(main_canvas, (x0 - 2, y0 - 2), (x0 + tw + 2, y0 + th + 2), (80, 80, 80), 2)
+    # Paste
+    roi = main_canvas[y0 : y0 + th, x0 : x0 + tw]
+    np.copyto(roi, top_down)
+    return main_canvas
 
 
 # ──────────────────────────────────────────────────────────────────────────────

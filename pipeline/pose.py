@@ -2,8 +2,7 @@
 Module 4 — Pose Estimation (Top-Down)
 Interface: PoseEstimator.estimate(frame, tracks) → list[Pose]
 
-Recommended approach: RTMPose-m (ONNX, top-down per-crop).
-Alternatives: RTMPose-s, ViTPose-S, MediaPipe (balance only), YOLOv8-Pose.
+Uses mmpose inference (init_model + inference_topdown) for RTMPose-m.
 See: notebooks/03_pose_eval.ipynb
 
 Critical keypoints per test:
@@ -19,8 +18,8 @@ Decision log:
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
-import cv2
 import numpy as np
 
 from pipeline.models import Pose, Track
@@ -33,6 +32,13 @@ COCO_L_SHOULDER, COCO_R_SHOULDER = 5, 6
 COCO_L_HIP, COCO_R_HIP = 11, 12
 COCO_L_KNEE, COCO_R_KNEE = 13, 14
 COCO_L_ANKLE, COCO_R_ANKLE = 15, 16
+
+# mmpose RTMPose-m body (COCO 17 keypoints) — config + checkpoint
+RTMPOSE_M_CONFIG = "body_2d_keypoint/rtmpose/coco/rtmpose-m_8xb256-420e_aic-coco-256x192.py"
+RTMPOSE_M_CHECKPOINT = (
+    "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/"
+    "rtmpose-m_simcc-aic-coco_pt-aic-coco_420e-256x192-63eb25f7_20230126.pth"
+)
 
 
 def expand_bbox(
@@ -53,136 +59,148 @@ def expand_bbox(
     return x1, y1, x2, y2
 
 
+def _to_numpy(x):
+    """Convert tensor or array to numpy."""
+    if hasattr(x, "cpu"):
+        return x.cpu().numpy()
+    return np.asarray(x)
+
+
+def _mmpose_result_to_pose(
+    data_sample, track_id: int, frame_idx: int
+) -> Pose | None:
+    """Convert mmpose PoseDataSample to pipeline Pose."""
+    if not hasattr(data_sample, "pred_instances") or data_sample.pred_instances is None:
+        return None
+    pred = data_sample.pred_instances
+    kpts = _to_numpy(pred.keypoints)  # (1, 17, 2) or (1, 17, 3)
+    if kpts.size == 0:
+        return None
+    kpts = kpts.reshape(-1, kpts.shape[-1])
+    if kpts.shape[0] != 17:
+        return None
+    # Ensure (17, 3): x, y, confidence
+    if kpts.shape[1] == 2:
+        scores = _to_numpy(pred.keypoint_scores) if hasattr(pred, "keypoint_scores") else np.ones(17)
+        if scores.ndim > 1:
+            scores = scores.reshape(-1)
+        kpts = np.column_stack([kpts[:, 0], kpts[:, 1], scores[:17]])
+    keypoints = np.asarray(kpts, dtype=np.float32)
+    mean_conf = float(np.mean(keypoints[:, 2]))
+    return Pose(
+        track_id=track_id,
+        frame_idx=frame_idx,
+        keypoints=keypoints,
+        pose_confidence=mean_conf,
+    )
+
+
 class PoseEstimator:
     """
-    Top-down pose estimator: crops each tracked person bbox, runs RTMPose-m.
+    Top-down pose estimator using mmpose RTMPose-m.
 
-    Evaluation criteria:
-        - Ankle keypoints accurate for ≥ 90% of frames in jump clip
-        - Hip midpoint within ±5 px of manual annotation across sprint clip
-        - Batch inference for 12 students < 80 ms per frame on L4
-        - Pose confidence flag correctly identifies low-quality frames
+    Uses init_model + inference_topdown for proper SimCC decoding and
+    keypoint visualization.
     """
 
     def __init__(
         self,
-        model_path: str = "rtmpose-m.onnx",
+        config: str | None = None,
+        checkpoint: str | None = None,
         device: str = "cuda",
         bbox_expand: float = 0.25,
     ):
-        self.model_path = model_path
+        self.config = config or RTMPOSE_M_CONFIG
+        self.checkpoint = checkpoint or RTMPOSE_M_CHECKPOINT
         self.device = device
         self.bbox_expand = bbox_expand
-        self._session = None  # ONNX Runtime session
+        self._model = None
 
     def _load_model(self):
+        if self._model is not None:
+            return
         try:
-            import onnxruntime as ort  # type: ignore
+            from mmpose.apis import init_model
+            import mmpose
 
-            providers = (
-                ["CUDAExecutionProvider", "CPUExecutionProvider"]
-                if self.device == "cuda"
-                else ["CPUExecutionProvider"]
+            config_path = Path(mmpose.__file__).parent / ".mim" / "configs" / self.config
+            if not config_path.is_file():
+                raise FileNotFoundError(
+                    f"mmpose config not found: {config_path}\n"
+                    "Ensure mmpose is installed: pip install mmpose"
+                )
+            self._model = init_model(
+                str(config_path),
+                self.checkpoint,
+                device=self.device,
             )
-            self._session = ort.InferenceSession(self.model_path, providers=providers)
-            logger.info("RTMPose ONNX session loaded: %s", self.model_path)
-        except ImportError:
-            raise ImportError("onnxruntime not installed. Run: pip install onnxruntime-gpu")
-
-    def _preprocess_crop(self, crop: np.ndarray) -> np.ndarray:
-        """Resize and normalise crop for RTMPose-m (256×192 input)."""
-        resized = cv2.resize(crop, (192, 256))
-        img = resized.astype(np.float32) / 255.0
-        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-        std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-        img = (img - mean) / std
-        return img.transpose(2, 0, 1)[np.newaxis]  # (1, 3, 256, 192)
-
-    def _postprocess(
-        self, output: np.ndarray, x1: float, y1: float, x2: float, y2: float
-    ) -> tuple[np.ndarray, float]:
-        """
-        Convert heatmap output to (17, 3) keypoints in original frame coords.
-        Returns (keypoints, mean_confidence).
-        """
-        # RTMPose outputs SimCC distribution — simplified stub
-        # TODO: implement full SimCC decoding
-        kps = np.zeros((17, 3), dtype=np.float32)
-        w, h = x2 - x1, y2 - y1
-        # Placeholder: centre of bbox for all keypoints
-        for i in range(17):
-            kps[i] = [x1 + w / 2, y1 + h / 2, 0.0]
-        mean_conf = float(kps[:, 2].mean())
-        return kps, mean_conf
+            logger.info(
+                "RTMPose-m loaded via mmpose (config=%s, device=%s)",
+                self.config,
+                self.device,
+            )
+        except RuntimeError as e:
+            if self.device == "cuda" and (
+                "no kernel image" in str(e).lower() or "not compatible" in str(e).lower()
+            ):
+                logger.warning(
+                    "CUDA not supported by this PyTorch build. Falling back to CPU for pose."
+                )
+                self.device = "cpu"
+                self._load_model()
+            else:
+                raise
+        except ImportError as err:
+            raise ImportError(
+                "mmpose not installed. Run: pip install mmpose && mim install mmcv mmengine"
+            ) from err
 
     def estimate(self, frame: np.ndarray, tracks: list[Track]) -> list[Pose]:
-        """
-        Run pose estimation on all tracked persons in a single frame.
-        Each track is cropped individually (top-down approach).
-        """
-        if self._session is None:
-            self._load_model()
-
-        poses: list[Pose] = []
+        """Run pose estimation on all tracked persons in a single frame."""
+        if not tracks:
+            return []
+        self._load_model()
         img_h, img_w = frame.shape[:2]
-
+        bboxes = []
+        valid_tracks = []
         for track in tracks:
             x1, y1, x2, y2 = expand_bbox(*track.bbox, self.bbox_expand, img_h, img_w)
-            crop = frame[int(y1):int(y2), int(x1):int(x2)]
-            if crop.size == 0:
+            if x2 <= x1 or y2 <= y1:
                 continue
+            bboxes.append([x1, y1, x2, y2])
+            valid_tracks.append(track)
+        if not bboxes:
+            return []
+        bboxes_np = np.array(bboxes, dtype=np.float32)
+        try:
+            from mmpose.apis import inference_topdown
 
-            inp = self._preprocess_crop(crop)
-            output = self._session.run(None, {self._session.get_inputs()[0].name: inp})[0]
-            keypoints, conf = self._postprocess(output, x1, y1, x2, y2)
-
-            poses.append(
-                Pose(
-                    track_id=track.track_id,
-                    frame_idx=track.frame_idx,
-                    keypoints=keypoints,
-                    pose_confidence=conf,
-                )
+            results = inference_topdown(
+                self._model, frame, bboxes=bboxes_np, bbox_format="xyxy"
             )
+        except RuntimeError as e:
+            if self.device == "cuda" and "no kernel image" in str(e).lower():
+                logger.warning("Falling back to CPU for pose inference.")
+                self.device = "cpu"
+                self._model = None
+                self._load_model()
+                from mmpose.apis import inference_topdown
+
+                results = inference_topdown(
+                    self._model, frame, bboxes=bboxes_np, bbox_format="xyxy"
+                )
+            else:
+                raise
+        poses = []
+        for i, (track, ds) in enumerate(zip(valid_tracks, results)):
+            pose = _mmpose_result_to_pose(ds, track.track_id, track.frame_idx)
+            if pose is not None:
+                poses.append(pose)
         return poses
 
     def estimate_batch(self, frame: np.ndarray, tracks: list[Track]) -> list[Pose]:
         """
-        Batch all crops into a single ONNX inference call for throughput.
-        Preferred for frames with many students (shuttle/agility tests).
+        Batch pose estimation — same as estimate for mmpose (it batches internally).
+        Kept for API compatibility.
         """
-        if self._session is None:
-            self._load_model()
-
-        if not tracks:
-            return []
-
-        img_h, img_w = frame.shape[:2]
-        batch, meta = [], []
-
-        for track in tracks:
-            x1, y1, x2, y2 = expand_bbox(*track.bbox, self.bbox_expand, img_h, img_w)
-            crop = frame[int(y1):int(y2), int(x1):int(x2)]
-            if crop.size == 0:
-                continue
-            batch.append(self._preprocess_crop(crop)[0])  # (3, 256, 192)
-            meta.append((track, x1, y1, x2, y2))
-
-        if not batch:
-            return []
-
-        batch_np = np.stack(batch, axis=0)  # (N, 3, 256, 192)
-        outputs = self._session.run(None, {self._session.get_inputs()[0].name: batch_np})[0]
-
-        poses: list[Pose] = []
-        for i, (track, x1, y1, x2, y2) in enumerate(meta):
-            keypoints, conf = self._postprocess(outputs[i:i+1], x1, y1, x2, y2)
-            poses.append(
-                Pose(
-                    track_id=track.track_id,
-                    frame_idx=track.frame_idx,
-                    keypoints=keypoints,
-                    pose_confidence=conf,
-                )
-            )
-        return poses
+        return self.estimate(frame, tracks)

@@ -32,6 +32,18 @@ class AgilityExtractor(BaseMetricExtractor):
             return False
         return True
 
+    def _get_pixel_to_world_matrix(self) -> np.ndarray | None:
+        """Return 3×3 matrix for pixel→world (cm). Homography if available, else scale from single_axis."""
+        H = self.calibration.homography_matrix
+        if H is not None:
+            return H
+        # Fallback: single_axis calibration — uniform scale, origin at (0,0)
+        px_cm = self.calibration.pixels_per_cm
+        if px_cm is not None and px_cm > 0:
+            s = 1.0 / px_cm
+            return np.array([[s, 0, 0], [0, s, 0], [0, 0, 1]], dtype=np.float32)
+        return None
+
     def extract(
         self,
         tracks: list[list[Track]],
@@ -52,7 +64,13 @@ class AgilityExtractor(BaseMetricExtractor):
         cone_positions_cm = [(x * 100, y * 100) for x, y in cone_positions_m]
         start_cone_cm = cone_positions_cm[0]
 
-        H = self.calibration.homography_matrix
+        H = self._get_pixel_to_world_matrix()
+        if H is None:
+            logger.warning(
+                "Agility extractor requires homography or single_axis calibration with pixels_per_cm. "
+                "Skipping extraction."
+            )
+            return []
 
         # Build per-track world (X, Y) time series
         track_world_xy: dict[int, list[tuple[float, float, float]]] = {}  # → [(t, x, y)]
