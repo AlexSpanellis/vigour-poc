@@ -1,0 +1,212 @@
+digraph OpenFGA {
+    // Global settings
+    rankdir=TB;
+    bgcolor="white";
+    fontname="Helvetica Neue";
+    fontsize=12;
+    pad=0.8;
+    nodesep=1.0;
+    ranksep=1.0;
+    dpi=150;
+    splines=polyline;
+    concentrate=false;
+
+    // Default node style
+    node [fontname="Helvetica Neue", fontsize=11, style="filled,rounded", shape=box, penwidth=1.5, margin="0.15,0.1"];
+    edge [fontname="Helvetica Neue", fontsize=9, minlen=1];
+
+    // Title
+    labelloc=t;
+    label=<<BR/><B><FONT POINT-SIZE="24" COLOR="#1A237E">OpenFGA Authorization Graph</FONT></B><BR/><FONT POINT-SIZE="13" COLOR="#757575">Vigour Platform — Relationship-Based Access Control (ReBAC)</FONT><BR/><BR/>>;
+
+    // ══════════════════════════════════════════
+    // ROW 0: USERS
+    // ══════════════════════════════════════════
+    subgraph cluster_users {
+        label=<<B>Users (Actors)</B>>;
+        labeljust=l;
+        style="rounded,filled";
+        fillcolor="#E8EAF6";
+        color="#9FA8DA";
+        fontsize=12;
+        fontname="Helvetica Neue Bold";
+        margin=20;
+
+        node [shape=oval, penwidth=2, width=1.8, height=0.8];
+
+        sipho [label=<<B>Sipho</B><BR/><FONT POINT-SIZE="9" COLOR="#37474F">super_admin</FONT>>, fillcolor="#BBDEFB", color="#1565C0"];
+        dlamini [label=<<B>Mr. Dlamini</B><BR/><FONT POINT-SIZE="9" COLOR="#37474F">school_head</FONT>>, fillcolor="#C8E6C9", color="#2E7D32"];
+        vanwyk [label=<<B>Mrs. van Wyk</B><BR/><FONT POINT-SIZE="9" COLOR="#37474F">teacher</FONT>>, fillcolor="#FFF9C4", color="#F9A825"];
+        botha [label=<<B>Mr. Botha</B><BR/><FONT POINT-SIZE="9" COLOR="#37474F">coach (read-only)</FONT>>, fillcolor="#FFE0B2", color="#E65100"];
+        dev [label=<<B>Developer</B><BR/><FONT POINT-SIZE="9" COLOR="#37474F">proposed, read-only</FONT>>, fillcolor="#EEEEEE", color="#757575"];
+    }
+
+    // ══════════════════════════════════════════
+    // ROW 1: PLATFORM
+    // ══════════════════════════════════════════
+    platform [
+        label=<<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="2" CELLPADDING="3">
+            <TR><TD><B><FONT COLOR="white" POINT-SIZE="14">Platform: vigour</FONT></B></TD></TR>
+            <TR><TD><FONT COLOR="#B3E5FC" POINT-SIZE="9">Relations: super_admin, developer</FONT></TD></TR>
+        </TABLE>>,
+        fillcolor="#1A237E", color="#0D47A1"
+    ];
+
+
+    // ══════════════════════════════════════════
+    // ROW 2: SCHOOL
+    // ══════════════════════════════════════════
+    school [
+        label=<<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="2" CELLPADDING="3">
+            <TR><TD><B><FONT COLOR="white" POINT-SIZE="14">School: Oakwood Primary</FONT></B></TD></TR>
+            <TR><TD><FONT COLOR="#A5D6A7" POINT-SIZE="9">Relations: school_head, teacher, coach</FONT></TD></TR>
+            <TR><TD><FONT COLOR="#C8E6C9" POINT-SIZE="9">can_view = member OR super_admin from parent</FONT></TD></TR>
+            <TR><TD><FONT COLOR="#C8E6C9" POINT-SIZE="9">can_manage = school_head OR super_admin from parent</FONT></TD></TR>
+        </TABLE>>,
+        fillcolor="#2E7D32", color="#1B5E20"
+    ];
+
+    // ══════════════════════════════════════════
+    // ROW 3: CLASS
+    // ══════════════════════════════════════════
+    class6a [
+        label=<<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="2" CELLPADDING="3">
+            <TR><TD><B><FONT COLOR="#333333" POINT-SIZE="14">Class: 6A</FONT></B></TD></TR>
+            <TR><TD><FONT COLOR="#555555" POINT-SIZE="9">Relations: school, teacher, enrolled_student</FONT></TD></TR>
+            <TR><TD><FONT COLOR="#666666" POINT-SIZE="9">can_view = teacher OR school_head↑ OR coach↑</FONT></TD></TR>
+            <TR><TD><FONT COLOR="#666666" POINT-SIZE="9">can_edit = teacher OR school_head↑</FONT></TD></TR>
+        </TABLE>>,
+        fillcolor="#FDD835", color="#F9A825"
+    ];
+
+    // ══════════════════════════════════════════
+    // ROW 4: SESSION
+    // ══════════════════════════════════════════
+    session [
+        label=<<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="2" CELLPADDING="3">
+            <TR><TD><B><FONT COLOR="white" POINT-SIZE="14">TestSession: VJ-001</FONT></B></TD></TR>
+            <TR><TD><FONT COLOR="#FFCC80" POINT-SIZE="9">Relations: school, class, teacher</FONT></TD></TR>
+            <TR><TD><FONT COLOR="#FFE0B2" POINT-SIZE="9">can_view = teacher OR teacher↑class OR head↑school</FONT></TD></TR>
+            <TR><TD><FONT COLOR="#FFE0B2" POINT-SIZE="9">can_approve_results = teacher OR school_head↑</FONT></TD></TR>
+        </TABLE>>,
+        fillcolor="#E65100", color="#BF360C"
+    ];
+
+    // ══════════════════════════════════════════
+    // ROW 5: RESULT + STUDENT
+    // ══════════════════════════════════════════
+    result [
+        label=<<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="2" CELLPADDING="3">
+            <TR><TD><B><FONT COLOR="white" POINT-SIZE="14">Result: R-001</FONT></B></TD></TR>
+            <TR><TD><FONT COLOR="#EF9A9A" POINT-SIZE="9">Relations: session, tested_student</FONT></TD></TR>
+            <TR><TD><FONT COLOR="#FFCDD2" POINT-SIZE="9">can_view = can_view from session</FONT></TD></TR>
+            <TR><TD><FONT COLOR="#FFCDD2" POINT-SIZE="9">can_approve = can_approve_results from session</FONT></TD></TR>
+        </TABLE>>,
+        fillcolor="#C62828", color="#B71C1C"
+    ];
+
+    student [
+        label=<<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="2" CELLPADDING="3">
+            <TR><TD><B><FONT COLOR="white" POINT-SIZE="14">Student: Liam</FONT></B></TD></TR>
+            <TR><TD><FONT COLOR="#CE93D8" POINT-SIZE="9">Data record — not an authenticated user</FONT></TD></TR>
+            <TR><TD><FONT COLOR="#CE93D8" POINT-SIZE="9">enrolled_student of class</FONT></TD></TR>
+            <TR><TD><FONT COLOR="#E1BEE7" POINT-SIZE="9">Results linked by UUID (survives transfers)</FONT></TD></TR>
+        </TABLE>>,
+        fillcolor="#6A1B9A", color="#4A148C"
+    ];
+
+    // ══════════════════════════════════════════
+    // USER → ENTITY: DIRECT RELATIONSHIPS
+    // ══════════════════════════════════════════
+    sipho -> platform [label="  super_admin  ", color="#43A047", penwidth=2.5, fontcolor="#2E7D32"];
+    dev -> platform [label="  developer  ", color="#9E9E9E", penwidth=1.5, fontcolor="#757575"];
+    dlamini -> school [label="  school_head  ", color="#43A047", penwidth=2.5, fontcolor="#2E7D32"];
+    botha -> school [label="  coach  ", color="#FFA000", penwidth=2.5, fontcolor="#E65100"];
+    vanwyk -> class6a [label="  teacher  ", color="#43A047", penwidth=2.5, fontcolor="#2E7D32"];
+
+    // ══════════════════════════════════════════
+    // ENTITY HIERARCHY (parent relationships)
+    // ══════════════════════════════════════════
+    platform -> school [label="  parent_platform  ", color="#1565C0", penwidth=2.5, fontcolor="#1565C0"];
+    school -> class6a [label="  school  ", color="#2E7D32", penwidth=2.5, fontcolor="#2E7D32"];
+    class6a -> session [label="  class  ", color="#F9A825", penwidth=2.5, fontcolor="#6D4C00"];
+    session -> result [label="  session  ", color="#E65100", penwidth=2.5, fontcolor="#E65100"];
+    class6a -> student [label="  enrolled_student  ", color="#6A1B9A", penwidth=1.5, fontcolor="#6A1B9A"];
+    result -> student [label="  tested_student  ", color="#6A1B9A", penwidth=1.5, fontcolor="#6A1B9A"];
+
+    // ══════════════════════════════════════════
+    // DERIVED PERMISSIONS (dashed traversals)
+    // ══════════════════════════════════════════
+    sipho -> school [style=dashed, color="#66BB6A", penwidth=1, arrowhead=open, label="  traverses↓  ", fontcolor="#43A047"];
+    dlamini -> class6a [style=dashed, color="#66BB6A", penwidth=1, arrowhead=open, label="  can_view, can_edit  ", fontcolor="#43A047"];
+    dlamini -> result [style=dashed, color="#66BB6A", penwidth=1, arrowhead=open, label="  can_approve  ", fontcolor="#43A047"];
+    vanwyk -> session [style=dashed, color="#66BB6A", penwidth=1, arrowhead=open, label="  teacher / can_view  ", fontcolor="#43A047"];
+    vanwyk -> result [style=dashed, color="#66BB6A", penwidth=1, arrowhead=open, label="  can_approve  ", fontcolor="#43A047"];
+    botha -> class6a [style=dashed, color="#FFA000", penwidth=1, arrowhead=open, label="  can_view  ", fontcolor="#E65100"];
+    botha -> session [style=dashed, color="#FFA000", penwidth=1, arrowhead=open, label="  can_view  ", fontcolor="#E65100"];
+    botha -> result [style=dashed, color="#E53935", penwidth=1.5, arrowhead=odot, label=<  <B>NO approve</B>  >, fontcolor="#E53935"];
+
+    // ══════════════════════════════════════════
+    // LEGEND + KEY PATHS
+    // ══════════════════════════════════════════
+    subgraph cluster_legend {
+        label="";
+        style="rounded,filled";
+        fillcolor="#FAFAFA";
+        color="#E0E0E0";
+        margin=16;
+
+        node [shape=plaintext, fillcolor="#FAFAFA"];
+
+        legend [label=<
+            <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="5" CELLPADDING="4">
+                <TR><TD COLSPAN="4"><B><FONT POINT-SIZE="13">Legend</FONT></B></TD></TR>
+                <TR>
+                    <TD BGCOLOR="#1A237E" WIDTH="16" HEIGHT="10"></TD><TD ALIGN="LEFT">Platform</TD>
+                    <TD BGCOLOR="#2E7D32" WIDTH="16" HEIGHT="10"></TD><TD ALIGN="LEFT">School</TD>
+                </TR>
+                <TR>
+                    <TD BGCOLOR="#FDD835" WIDTH="16" HEIGHT="10"></TD><TD ALIGN="LEFT">Class</TD>
+                    <TD BGCOLOR="#E65100" WIDTH="16" HEIGHT="10"></TD><TD ALIGN="LEFT">Test Session</TD>
+                </TR>
+                <TR>
+                    <TD BGCOLOR="#C62828" WIDTH="16" HEIGHT="10"></TD><TD ALIGN="LEFT">Result</TD>
+                    <TD BGCOLOR="#6A1B9A" WIDTH="16" HEIGHT="10"></TD><TD ALIGN="LEFT">Student (data)</TD>
+                </TR>
+                <TR><TD COLSPAN="4"> </TD></TR>
+                <TR>
+                    <TD COLSPAN="2">───▸  Direct relation</TD>
+                    <TD COLSPAN="2">- - ▸  Derived permission</TD>
+                </TR>
+                <TR>
+                    <TD BGCOLOR="#43A047" WIDTH="16" HEIGHT="10"></TD><TD>Full access</TD>
+                    <TD BGCOLOR="#FFA000" WIDTH="16" HEIGHT="10"></TD><TD>Read-only</TD>
+                </TR>
+                <TR>
+                    <TD BGCOLOR="#E53935" WIDTH="16" HEIGHT="10"></TD><TD>No access</TD>
+                    <TD BGCOLOR="#BDBDBD" WIDTH="16" HEIGHT="10"></TD><TD>Deferred (Phase 2)</TD>
+                </TR>
+                <TR><TD COLSPAN="4"> </TD></TR>
+                <TR><TD COLSPAN="4"><B><FONT POINT-SIZE="11">Key Permission Paths</FONT></B></TD></TR>
+                <TR><TD COLSPAN="4" ALIGN="LEFT"><FONT COLOR="#43A047">■</FONT> Teacher: teacher → class:6A → session VJ-001 → approve result R-001</TD></TR>
+                <TR><TD COLSPAN="4" ALIGN="LEFT"><FONT COLOR="#FFA000">■</FONT> Coach: coach → school → view class → view session → <FONT COLOR="#E53935"><B>CANNOT approve</B></FONT></TD></TR>
+                <TR><TD COLSPAN="4" ALIGN="LEFT"><FONT COLOR="#43A047">■</FONT> School head: school_head → school → ALL classes → approve ANY result</TD></TR>
+                <TR><TD COLSPAN="4" ALIGN="LEFT"><FONT COLOR="#1565C0">■</FONT> Super admin: super_admin → platform → traverses parent_platform → full access</TD></TR>
+                <TR><TD COLSPAN="4" ALIGN="LEFT"><FONT COLOR="#6A1B9A">■</FONT> Student transfer: old tuples deleted, new written; results stay linked via UUID</TD></TR>
+                <TR><TD COLSPAN="4"> </TD></TR>
+                <TR><TD COLSPAN="4"><B><FONT POINT-SIZE="11">Two-Layer Authorization</FONT></B></TD></TR>
+                <TR><TD COLSPAN="4" ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="#555555">Layer 1: JWT role claim (ZITADEL) → API route gating</FONT></TD></TR>
+                <TR><TD COLSPAN="4" ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="#555555">Layer 2: OpenFGA tuple check → resource-level gating</FONT></TD></TR>
+                <TR><TD COLSPAN="4" ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="#E53935">Roles in ZITADEL and OpenFGA must stay in sync</FONT></TD></TR>
+            </TABLE>
+        >];
+    }
+
+    // Rank hints for clean rows
+    { rank=same; sipho; dlamini; vanwyk; botha; dev; }
+    { rank=same; platform; }
+    { rank=same; school; }
+    { rank=same; class6a; }
+    { rank=same; session; }
+    { rank=same; result; student; }
+}
