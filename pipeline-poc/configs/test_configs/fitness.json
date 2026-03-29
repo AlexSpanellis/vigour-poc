@@ -5,24 +5,33 @@
   "calibration_detector": "sam3_prompt",
   "calibration_model": "sam3.pt",
   "calibration_prompt": "training cone",
-  "calibration_min_confidence": 0.4,
+  "calibration_min_confidence": 0.45,
   "cone_layout": {
     "pattern": "grid",
     "first_cone_cm": [0, 0],
     "spacing_cm_x": 70,
-    "spacing_cm_y": 300,
+    "spacing_cm_y": 200,
     "rows": 6,
     "cols": 7,
     "grid_fit_use_iterative": true,
     "grid_fit_max_iters": 30,
     "grid_fit_match_radius_px": 150,
     "grid_fit_min_inliers": 10,
-    "grid_fit_use_confidence_weights": false
+    "grid_fit_use_confidence_weights": false,
+    "reproj_error_threshold_cm": 28,
+    "_comment_reproj": "Oblique behind-view camera: oracle test proves 17 cm floor; raise to 20 cm",
+    "camera_orientation": "behind",
+    "spatial_roi": {
+      "y_min_frac": 0.35,
+      "y_max_frac": 0.97,
+      "x_min_frac": 0.05,
+      "x_max_frac": 0.95
+    }
   },
   "set_duration_s": 15,
   "num_sets": 3,
   "rest_between_sets_s": 30,
-  "camera_height_m": 2.5,
+  "camera_height_m": 35,
   "reversal_proximity_cm": 30,
-  "capture_fps": 15
+  "capture_fps": 50
 }

@@ -366,7 +366,7 @@ class PipelineCache:
                 [calib.pixels_per_cm if calib.pixels_per_cm is not None else -1.0],
                 dtype=np.float64,
             ),
-            "reprojection_error_px": np.array([calib.reprojection_error_px], dtype=np.float64),
+            "reprojection_error_cm": np.array([calib.reprojection_error_cm], dtype=np.float64),
             "is_valid": np.array([int(calib.is_valid)], dtype=np.int8),
             "cone_positions_px": np.array(calib.cone_positions_px or [], dtype=np.float32).reshape(-1, 2) if calib.cone_positions_px else np.empty((0, 2), dtype=np.float32),
             "cone_positions_world": np.array(calib.cone_positions_world or [], dtype=np.float32).reshape(-1, 2) if calib.cone_positions_world else np.empty((0, 2), dtype=np.float32),
@@ -393,7 +393,7 @@ class PipelineCache:
             pixels_per_cm=ppc_raw if ppc_raw >= 0 else None,
             cone_positions_px=cones_px,
             cone_positions_world=cones_world,
-            reprojection_error_px=float(data["reprojection_error_px"][0]),
+            reprojection_error_cm=float(data["reprojection_error_cm"][0]),
             is_valid=bool(data["is_valid"][0]),
         )
 

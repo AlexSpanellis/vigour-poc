@@ -55,8 +55,9 @@ class CalibrationResult:
     pixels_per_cm: float | None              # None if homography
     cone_positions_px: list[tuple]           # detected cone centres in pixels
     cone_positions_world: list[tuple]        # corresponding world coords (cm)
-    reprojection_error_px: float             # quality metric
+    reprojection_error_cm: float             # mean reprojection error in world (cm) units
     is_valid: bool
+    condition_number: float | None = None    # H condition number; high (>500) → ill-conditioned
 
 
 @dataclass

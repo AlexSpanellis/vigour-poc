@@ -44,7 +44,7 @@ class AgilityExtractor(BaseMetricExtractor):
             return np.array([[s, 0, 0], [0, s, 0], [0, 0, 1]], dtype=np.float32)
         return None
 
-    def extract(
+    def _extract(
         self,
         tracks: list[list[Track]],
         poses: list[list[Pose]],

@@ -38,6 +38,7 @@ DEFAULT_CONFIG = {
 
 
 class ExplosivenessExtractor(BaseMetricExtractor):
+    requires_valid_calibration = False  # uses pixels_per_cm from single_axis; no H needed
 
     def validate_inputs(self, tracks, poses, frames) -> bool:
         if len(frames) < DEFAULT_CONFIG["baseline_frames"]:
@@ -48,7 +49,7 @@ class ExplosivenessExtractor(BaseMetricExtractor):
             return False
         return True
 
-    def extract(
+    def _extract(
         self,
         tracks: list[list[Track]],
         poses: list[list[Pose]],

@@ -239,7 +239,7 @@ def process_clip(
                 pixels_per_cm=None,
                 cone_positions_px=[],
                 cone_positions_world=[],
-                reprojection_error_px=float("inf"),
+                reprojection_error_cm=float("inf"),
                 is_valid=False,
             )
         cache.save_calibration(calibration)
@@ -257,8 +257,25 @@ def process_clip(
             )
             results = []
         else:
+            from pipeline.calibrate import CalibrationError
             extractor = _get_extractor(test_type, geometry_config, calibration)
-            results = extractor.extract(all_tracks, all_poses, raw_frames)
+            try:
+                results = extractor.extract(all_tracks, all_poses, raw_frames)
+            except CalibrationError as exc:
+                logger.error(
+                    "[%s] Calibration failed — no metric_value written. "
+                    "Recording calibration_failed event. Reason: %s",
+                    job_id, exc,
+                )
+                self.update_state(
+                    state="FAILURE",
+                    meta={
+                        "stage": "extraction",
+                        "error": "calibration_failed",
+                        "detail": str(exc),
+                    },
+                )
+                return {"calibration_failed": True, "detail": str(exc)}
         cache.save_results(results)
 
     # ── Stage 8: Output (annotated video + JSON) ─────────────────────────────

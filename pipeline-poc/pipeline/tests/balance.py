@@ -31,6 +31,7 @@ FAILED = "FAILED"
 
 
 class BalanceExtractor(BaseMetricExtractor):
+    requires_valid_calibration = False  # balance is purely temporal; no spatial calibration needed
 
     def validate_inputs(self, tracks, poses, frames) -> bool:
         if len(frames) < 10:
@@ -38,7 +39,7 @@ class BalanceExtractor(BaseMetricExtractor):
             return False
         return True
 
-    def extract(
+    def _extract(
         self,
         tracks: list[list[Track]],
         poses: list[list[Pose]],

@@ -6,5 +6,20 @@
   "num_attempts": 3,
   "cone_touch_threshold_cm": 80,
   "start_zone_cm": 50,
-  "capture_fps": 15
+  "capture_fps": 15,
+  "calibration_detector": "sam3_prompt",
+  "calibration_model": "sam3.pt",
+  "calibration_prompt": "training cone",
+  "calibration_min_confidence": 0.50,
+  "cone_layout": {
+    "pattern": "irregular",
+    "cone_count": 4,
+    "reproj_error_threshold_cm": 5.0,
+    "spatial_roi": {
+      "y_min_frac": 0.40,
+      "y_max_frac": 0.97,
+      "x_min_frac": 0.05,
+      "x_max_frac": 0.95
+    }
+  }
 }

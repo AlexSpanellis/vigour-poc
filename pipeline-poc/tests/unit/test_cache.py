@@ -159,7 +159,7 @@ def test_calibration_homography_roundtrip(cache):
         pixels_per_cm=None,
         cone_positions_px=[(100.0, 200.0), (300.0, 400.0)],
         cone_positions_world=[(0.0, 0.0), (500.0, 0.0)],
-        reprojection_error_px=1.23,
+        reprojection_error_cm=1.23,
         is_valid=True,
     )
     cache.save_calibration(calib)
@@ -168,7 +168,7 @@ def test_calibration_homography_roundtrip(cache):
 
     assert loaded.method == "homography"
     assert loaded.is_valid is True
-    assert loaded.reprojection_error_px == pytest.approx(1.23)
+    assert loaded.reprojection_error_cm == pytest.approx(1.23)
     np.testing.assert_allclose(loaded.homography_matrix, H)
     assert len(loaded.cone_positions_px) == 2
 
@@ -180,7 +180,7 @@ def test_calibration_single_axis_roundtrip(cache):
         pixels_per_cm=4.5,
         cone_positions_px=[],
         cone_positions_world=[],
-        reprojection_error_px=0.0,
+        reprojection_error_cm=0.0,
         is_valid=True,
     )
     cache.save_calibration(calib)
