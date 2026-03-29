@@ -8,41 +8,56 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 
+from pipeline.calibrate import CalibrationError
 from pipeline.models import CalibrationResult, Pose, TestResult, Track
 
 
 class BaseMetricExtractor(ABC):
-    """
-    Abstract base class for all test-specific metric extractors.
+    """Abstract base class for all test-specific metric extractors.
 
     Subclasses implement:
-        extract()        — primary computation, returns list[TestResult]
+        extract()         — primary computation, returns list[TestResult]
         validate_inputs() — guards against bad data before heavy processing
+
+    Class attribute
+    ---------------
+    requires_valid_calibration : bool
+        When True, ``extract()`` raises :class:`~pipeline.calibrate.CalibrationError`
+        if the supplied calibration has ``is_valid=False``, preventing a bad
+        ``metric_value`` from ever reaching the database.
+        Tests that need no spatial calibration (balance, push-ups, reflex)
+        should set this to False.
     """
+
+    requires_valid_calibration: bool = True
 
     def __init__(self, geometry_config: dict, calibration: CalibrationResult):
         self.config = geometry_config
         self.calibration = calibration
 
-    @abstractmethod
     def extract(
         self,
-        tracks: list[list[Track]],    # outer list = frames, inner = tracks per frame
+        tracks: list[list[Track]],
         poses: list[list[Pose]],
         frames: list[np.ndarray],
     ) -> list[TestResult]:
-        """
-        Run test-specific metric extraction over the full clip.
+        """Run extraction, with a hard-halt guard for invalid calibrations.
 
-        Args:
-            tracks: Per-frame list of active Track objects.
-            poses:  Per-frame list of Pose objects (aligned with tracks).
-            frames: Raw BGR frames (for visualisation / fallback logic).
-
-        Returns:
-            One TestResult per student per attempt.
+        Raises
+        ------
+        CalibrationError
+            If ``requires_valid_calibration`` is True and the calibration is
+            not valid.  The caller (worker session boundary) must catch this
+            and record a ``calibration_failed`` event rather than writing an
+            empty or wrong ``metric_value``.
         """
-        raise NotImplementedError
+        if self.requires_valid_calibration and not self.calibration.is_valid:
+            raise CalibrationError(
+                f"{type(self).__name__} requires valid calibration but "
+                f"is_valid=False (error={self.calibration.reprojection_error_cm:.2f} cm). "
+                "Record a calibration_failed event and do not write metric_value."
+            )
+        return self._extract(tracks, poses, frames)
 
     @abstractmethod
     def validate_inputs(
@@ -51,10 +66,20 @@ class BaseMetricExtractor(ABC):
         poses: list[list[Pose]],
         frames: list[np.ndarray],
     ) -> bool:
-        """
-        Minimum data quality gate before running extraction.
+        """Minimum data quality gate before running extraction.
+
         Return False to skip extraction and flag the clip.
         """
+        raise NotImplementedError
+
+    @abstractmethod
+    def _extract(
+        self,
+        tracks: list[list[Track]],
+        poses: list[list[Pose]],
+        frames: list[np.ndarray],
+    ) -> list[TestResult]:
+        """Subclass implementation — called only after calibration guard passes."""
         raise NotImplementedError
 
     # ------------------------------------------------------------------

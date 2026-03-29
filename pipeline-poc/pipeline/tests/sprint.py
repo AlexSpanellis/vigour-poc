@@ -36,7 +36,7 @@ class SprintExtractor(BaseMetricExtractor):
             return False
         return True
 
-    def extract(
+    def _extract(
         self,
         tracks: list[list[Track]],
         poses: list[list[Pose]],

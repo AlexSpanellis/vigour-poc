@@ -71,6 +71,40 @@ def test_clustered():
     assert coords[3] == (225, 0)
 
 
+def test_grid_asymmetric_spacing():
+    """Fix 2: spacing_cm_x and spacing_cm_y are used independently (fitness.json layout)."""
+    coords = generate_cone_world_coords(
+        {
+            "pattern": "grid",
+            "first_cone_cm": [0, 0],
+            "spacing_cm_x": 70,
+            "spacing_cm_y": 300,
+            "rows": 2,
+            "cols": 3,
+        },
+        6,
+    )
+    assert len(coords) == 6
+    # Row 0: x steps of 70 cm
+    assert coords[0] == (0, 0)
+    assert coords[1] == (70, 0)
+    assert coords[2] == (140, 0)
+    # Row 1: y step of 300 cm, x steps of 70 cm
+    assert coords[3] == (0, 300)
+    assert coords[4] == (70, 300)
+    assert coords[5] == (140, 300)
+
+
+def test_grid_symmetric_spacing_fallback():
+    """spacing_cm fallback still works when spacing_cm_x/y absent."""
+    coords = generate_cone_world_coords(
+        {"pattern": "grid", "first_cone_cm": [0, 0], "spacing_cm": 50, "rows": 2, "cols": 3},
+        6,
+    )
+    assert coords[3] == (0, 50)   # row 1, same step in both axes
+    assert coords[4] == (50, 50)
+
+
 def test_clustered_fallback_to_linear():
     cone_px = [(0, 0), (100, 0), (200, 0)]
     coords = generate_cone_world_coords_from_pixels(

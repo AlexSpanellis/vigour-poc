@@ -43,7 +43,7 @@ def _make_calibration(valid=True):
             pixels_per_cm=None,
             cone_positions_px=[(50.0, 50.0), (300.0, 50.0)],
             cone_positions_world=[(0.0, 0.0), (500.0, 0.0)],
-            reprojection_error_px=1.5,
+            reprojection_error_cm=1.5,
             is_valid=True,
         )
     return CalibrationResult(
@@ -52,7 +52,7 @@ def _make_calibration(valid=True):
         pixels_per_cm=None,
         cone_positions_px=[],
         cone_positions_world=[],
-        reprojection_error_px=float("inf"),
+        reprojection_error_cm=float("inf"),
         is_valid=False,
     )
 

@@ -36,6 +36,11 @@ def generate_cone_world_coords(
 
     Returns:
         List of (x_cm, y_cm) tuples.
+
+    Notes:
+        Grid layout supports both symmetric spacing (``spacing_cm``) and
+        asymmetric spacing (``spacing_cm_x`` / ``spacing_cm_y``).  The
+        asymmetric keys take precedence; ``spacing_cm`` is the fallback.
     """
     pattern = layout_config.get("pattern", "linear")
     if pattern == "linear":
@@ -95,7 +100,9 @@ def _generate_linear(config: dict, num_cones: int) -> list[tuple[float, float]]:
 def _generate_grid(config: dict, num_cones: int) -> list[tuple[float, float]]:
     first = config.get("first_cone_cm", [0.0, 0.0])
     fx, fy = float(first[0]), float(first[1])
-    spacing = float(config.get("spacing_cm", 100.0))
+    # Support separate x/y spacing; fall back to the single spacing_cm key.
+    spacing_x = float(config.get("spacing_cm_x", config.get("spacing_cm", 100.0)))
+    spacing_y = float(config.get("spacing_cm_y", config.get("spacing_cm", 100.0)))
     rows = int(config.get("rows", 2))
     cols = int(config.get("cols", 2))
 
@@ -104,7 +111,7 @@ def _generate_grid(config: dict, num_cones: int) -> list[tuple[float, float]]:
         for c in range(cols):
             if len(coords) >= num_cones:
                 break
-            coords.append((fx + c * spacing, fy + r * spacing))
+            coords.append((fx + c * spacing_x, fy + r * spacing_y))
         if len(coords) >= num_cones:
             break
     return coords

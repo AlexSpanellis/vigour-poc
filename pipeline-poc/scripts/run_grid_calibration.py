@@ -63,7 +63,7 @@ def main() -> None:
     print("\n--- Grid calibration result ---")
     print("Method:              ", calibration.method)
     print("Valid:               ", calibration.is_valid)
-    print("Reprojection error px:", calibration.reprojection_error_px)
+    print("Reprojection error cm:", calibration.reprojection_error_cm)
     print("Cones used:          ", len(calibration.cone_positions_px))
     if calibration.homography_matrix is not None:
         print("Homography shape:    ", calibration.homography_matrix.shape)

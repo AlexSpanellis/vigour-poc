@@ -1,12 +1,24 @@
 {
-  "test_type": "fitness",
+  "test_type": "shuttle",
   "cone_count": 6,
   "cone_spacing_m": 4.0,
+  "calibration_detector": "sam3_prompt",
+  "calibration_model": "sam3.pt",
+  "calibration_prompt": "training cone",
+  "calibration_min_confidence": 0.50,
   "cone_layout": {
     "pattern": "linear",
     "first_cone_cm": [0, 0],
     "spacing_cm": 400,
-    "direction": "x"
+    "direction": "x",
+    "reproj_error_threshold_cm": 5.0,
+    "camera_orientation": "side",
+    "spatial_roi": {
+      "y_min_frac": 0.35,
+      "y_max_frac": 0.97,
+      "x_min_frac": 0.05,
+      "x_max_frac": 0.95
+    }
   },
   "set_duration_s": 15,
   "num_sets": 3,

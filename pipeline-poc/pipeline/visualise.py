@@ -594,8 +594,8 @@ def _draw_calibration_overlay(canvas: np.ndarray, calib: CalibrationResult) -> n
             pass  # degenerate homography — skip axis drawing
 
     # Reprojection error badge (bottom-left)
-    err_text = f"Reproj: {calib.reprojection_error_px:.1f}px"
-    err_col = COL["lean_ok"] if calib.reprojection_error_px < 3.0 else COL["lean_warn"]
+    err_text = f"Reproj: {calib.reprojection_error_cm:.1f}cm"
+    err_col = COL["lean_ok"] if calib.reprojection_error_cm < 1.5 else COL["lean_warn"]
     cv2.putText(canvas, err_text, (10, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.55, err_col, 2)
 
     return canvas
