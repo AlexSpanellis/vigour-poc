@@ -13,7 +13,8 @@ After analysing the 7 tests against camera geometry, measurement requirements, a
 | Tier | Approach | Tests | Teacher effort |
 |------|----------|-------|---------------|
 | **Tier 0** | No calibration | Balance | Zero — just point camera |
-| **Tier 1** | Reference-object calibration | Explosiveness, Mobility | Minimal — hold a known object in frame once |
+| **Tier 1a** | ArUco bib marker (per-student) | Explosiveness | Zero — marker on student's bib, automatic |
+| **Tier 1b** | Pose + student height from profile | Mobility | Zero — uses known height + detected skeleton |
 | **Tier 2** | Two-point bounding box + cone layout | Sprint, Fitness, Agility, Coordination | Place 2 reference cones → FOV check → place test cones |
 
 ---
@@ -44,47 +45,92 @@ After analysing the 7 tests against camera geometry, measurement requirements, a
 
 ---
 
-## Tier 1: Reference-Object Calibration
+## Tier 1a: ArUco Bib Marker Calibration (Per-Student)
 
 ### Test 1 — Explosiveness (Vertical Jump)
 
-**What we need to measure**: Height of feet off floor in centimetres. This is a single-axis (vertical) measurement.
+**What we need to measure**: Height of feet off floor in centimetres. Single-axis (vertical) measurement.
 
-**Current approach**: `calibrate_single_axis()` — computes `pixels_per_cm` from a reference object of known height (default: 23cm cone).
+**Bib design**: Each student wears a numbered bib with a printed ArUco marker of known physical size (e.g., 8cm × 8cm). The bib serves dual purpose:
+1. **Student identification** — bib number (printed text or encoded in ArUco dictionary ID)
+2. **Calibration reference** — known marker size → per-student `pixels_per_cm`
+
+**Why ArUco on bib is better than the previous cone-based approach**:
+
+| Factor | Previous (cone on floor) | ArUco bib |
+|--------|-------------------------|-----------|
+| Teacher effort | Hold cone for 2 seconds | Zero — bib is already on student |
+| Per-student accuracy | Single global px/cm for all students | Per-student px/cm at their actual depth |
+| Depth variation | Students at different distances share one scale → systematic error | Each marker is at the student's own depth → accurate |
+| Detection reliability | HSV cone detection (lighting-dependent) | ArUco detection (rotation/lighting robust, built into OpenCV) |
+| Dual purpose | Calibration only | Calibration + student ID |
+
+**Critical insight**: In Explosiveness, students stand in a row. Students at the ends of the row are further from the camera than those in the centre. A single global px/cm (from a cone) would over-estimate jump height for far students and under-estimate for near students. Per-student ArUco calibration eliminates this systematic error entirely.
+
+**Camera**: Front-facing → bib faces camera directly → ArUco marker is fully visible and near-square.
 
 **Proposed user flow**:
 ```
 1. Teacher selects "Explosiveness" test type
 2. App shows setup guide:
-   "Place students in a row. Camera faces them from the front."
-   [diagram]
-3. App shows calibration step:
-   "Hold a cone upright at the students' feet position for 2 seconds"
-   [live camera feed with target zone overlay]
-4. App auto-detects the cone and calculates px/cm scale
-   ✅ "Calibrated — 1cm = 4.2 pixels" (shown as simple green checkmark)
-   ⚠️ "Can't see the cone — try again"
-5. Teacher removes cone, students step into position
-6. Teacher taps Record
+   "Place students in a row facing the camera. Make sure bibs are visible."
+   [diagram showing camera position and student row]
+3. App performs live detection:
+   ✅ "5 students detected — all bibs readable"
+   ⚠️ "Student 3: bib not visible — adjust clothing"
+   (No separate calibration step — bibs ARE the calibration)
+4. Teacher taps Record
+5. Students perform 3 jumps each
 ```
 
-**Alternative considered**: Skip calibration entirely and use the students' known standing height from their profile as the reference. This would eliminate the calibration step but requires accurate height data in the system.
+**How it works in the pipeline**:
+```
+For each tracked student:
+  1. During standing baseline (first 30 frames):
+     - Detect ArUco marker on their bib → 4 corner points
+     - Known marker size (8cm) → compute per-student pixels_per_cm
+     - Store as calibration for this track_id
+  2. During jump detection (existing algorithm):
+     - Use per-student pixels_per_cm to convert ankle displacement
+     - height_cm = height_px / per_student_pixels_per_cm
+```
 
-**Assessment**: Current `calibrate_single_axis()` works. The UX just needs the on-screen guide. The cone-holding step adds ~10 seconds. **Recommend keeping it** — it's robust and doesn't depend on student profile data being accurate.
+**ArUco detection details**:
+- `cv2.aruco.detectMarkers(frame, dictionary)` returns marker corners + IDs
+- Marker side length in pixels = average of 4 edge lengths (handles slight rotation)
+- `pixels_per_cm = marker_side_px / marker_physical_size_cm`
+- Use `cv2.aruco.DICT_4X4_50` — small dictionary, fast detection, supports up to 50 unique bibs
+- The ArUco ID itself can encode the bib number (marker ID 7 = bib #7), replacing or supplementing OCR
 
-**Edge case**: Multiple students jumping simultaneously. The vertical scale is consistent across the row if the camera is square-on and far enough back. A single calibration suffices — no per-student calibration needed.
+**ArUco ID as bib number**: If marker ID directly encodes the bib number, this replaces PaddleOCR entirely for student identification. ArUco detection is faster, more reliable, and works at greater distances than text OCR. The printed bib still shows a human-readable number for the teacher to see.
+
+**Fallback**: If ArUco detection fails for a student (marker obscured, wrinkled), fall back to the median px/cm from other detected students in the same frame. Log a `calibration_fallback` flag.
+
+**Assessment**: This is a significant improvement over the cone-based approach. Zero teacher effort, per-student accuracy, and dual-purpose (ID + calibration). **Strongly recommended.**
 
 ---
 
+## Tier 1b: Pose-Based Calibration (Known Student Height)
+
 ### Test 6 — Mobility (Standing Toe-Touch)
 
-**What we need to measure**: Trunk flexion angle (degrees) AND fingertip-to-floor distance (cm, can be negative). Two measurements — angle is pose-only, distance needs spatial calibration.
+**What we need to measure**: Trunk flexion angle (degrees) AND fingertip-to-floor distance (cm, can be negative).
 
 **Camera**: Side-on, body height, perpendicular to student.
 
-**Proposed approach**: **Tier 1 — single-axis calibration** (same as Explosiveness but horizontal/vertical).
+**Why ArUco bib doesn't work here**: The camera views the student from the side. The bib (on chest/front) is edge-on to the camera — the ArUco marker is not visible. Printing a marker on the side of the bib is unreliable (fabric wrinkles, marker distortion).
 
-**Why not Tier 2**: The camera is perpendicular and at body height. There is minimal perspective distortion. A single-axis scale factor is sufficient for the fingertip-to-floor measurement. The angle is computed purely from pose keypoints (shoulder→hip→vertical) with no spatial calibration needed.
+**Proposed approach: Pose skeleton + known height from student profile**
+
+The student's height is typically recorded in school records and will be available in the Vigour system (student profile). During the standing phase before the toe-touch, the pose skeleton gives us the full body height in pixels:
+
+```
+height_px = distance(ankle_midpoint, head_top) in pixels
+height_cm = student's known height from profile
+pixels_per_cm = height_px / height_cm
+```
+
+This gives us accurate single-axis calibration with zero teacher effort and zero physical calibration artefacts.
 
 **Proposed user flow**:
 ```
@@ -92,23 +138,29 @@ After analysing the 7 tests against camera geometry, measurement requirements, a
 2. App shows setup guide:
    "Position camera side-on, at waist height, 2-3m away"
    "Students stand perpendicular to camera"
-   [diagram showing camera and student positions]
-3. Calibration step:
-   "Place a cone on the floor at the student's standing position"
-   [live camera with target zone overlay]
-4. App detects cone and computes vertical px/cm scale
-   ✅ "Scale calibrated"
-5. Student stands at the mark
-6. Teacher taps Record → student performs 3 toe-touch attempts
+   [diagram]
+3. App detects student via pose estimation:
+   ✅ "Student detected — height calibration from profile"
+   ⚠️ "Can't see full body — move camera back"
+4. Teacher taps Record
+5. Student performs 3 toe-touch attempts
 ```
 
-**Key insight**: For fingertip-to-floor distance, we only need vertical scale at the plane of the student. Since the camera is perpendicular and at the same distance as the student, a single-axis calibration is geometrically sufficient.
-
-**Angle measurement**: Computed from pose keypoints — no calibration dependency:
+**Angle measurement**: Computed purely from pose keypoints — no calibration dependency:
 - Trunk flexion angle = angle between (shoulder→hip vector) and vertical
-- This is pure image-space geometry, invariant to scale
+- This is image-space geometry, invariant to scale
 
-**Assessment**: Single-axis works. This test type doesn't exist in the current POC code yet — needs a new `MobilityExtractor`. The calibration code (`calibrate_single_axis`) already supports this.
+**Fingertip-to-floor distance**: Requires the px/cm scale:
+- Floor reference: ankle keypoint Y in standing position
+- Fingertip position: wrist keypoint Y at maximum flexion
+- Distance (cm) = (ankle_y - wrist_y) / pixels_per_cm
+- Negative value = fingertips above floor level (can't reach)
+
+**Fallback if student height not in profile**: Use population average for their age/grade as an estimate. Log a `height_estimated` flag. Accuracy degrades to ±5cm but is still useful for trend tracking.
+
+**Alternative considered — pre-calibration face-camera step**: Student faces camera → ArUco detected → px/cm stored → student turns sideways → test begins. Rejected because it adds 3 seconds per student and breaks the flow (teacher has to orchestrate student rotation).
+
+**Assessment**: Pose-based calibration is the right approach for side-on camera tests. It leverages data that already exists in the system (student height) and requires zero teacher setup. The ArUco bib still provides student ID when the student walks to/from the testing position (facing camera briefly).
 
 ---
 
@@ -389,39 +441,118 @@ PHASE 3 — Record
 
 ---
 
-## Summary: Approach Assessment
+## Summary: Approach Assessment Per Test
 
-### What works well with the BL/TR + Regular Y-Pattern approach:
+| Test | Tier | Calibration Source | Teacher Effort | Accuracy |
+|------|------|--------------------|----------------|----------|
+| **Balance** | 0 | None | Zero | N/A (temporal only) |
+| **Explosiveness** | 1a | ArUco bib marker (per-student) | Zero | High — per-student depth-corrected |
+| **Mobility** | 1b | Pose skeleton + student height profile | Zero | Good — depends on profile height accuracy |
+| **Sprint** | 2 | 2 cones (start/finish) | Minimal — place 2 cones | High — linear projection |
+| **Fitness** | 2 | BL/TR + 6 linear cones | Low — place 6 cones | High — well-conditioned homography |
+| **Agility** | 2 | BL/TR ROI + 4 drill cones | Low — place 4-6 cones | High — BL/TR eliminates false detections |
+| **Coordination** | 2 | 4-cone square (= BL/TR naturally) | Low — place 4 cones | High — D4 grid, natural BL/TR |
 
-| Test | Verdict | Rationale |
-|------|---------|-----------|
-| **Coordination** | **Best fit** | 4-cone square IS the BL/TR + grid. Zero extra cones needed. |
-| **Agility** | **Strong fit** | BL/TR solves the over-detection problem by defining ROI. Extra 2 calibration points improve H. |
-| **Fitness** | **Good fit** | BL/TR = endpoint cones. Linear Y-pattern with 6 cones. |
-| **Sprint** | **Adequate but overkill** | Only 2 cones needed (start/finish). They serve as BL/TR naturally. Linear projection suffices — no full homography needed. |
-| **Explosiveness** | **Not applicable** | Single-axis calibration. No cones on the floor. |
-| **Mobility** | **Not applicable** | Single-axis calibration. Side-on camera. |
-| **Balance** | **Not applicable** | No calibration needed. |
+### Where each approach shines:
 
-### Where the approach doesn't make sense:
+1. **ArUco bib (Explosiveness)**: Best fit. Camera faces students → marker fully visible. Per-student px/cm eliminates depth-variation error. Dual-purpose (ID + calibration). Zero teacher effort.
 
-1. **Sprint**: Two cones are sufficient. Making the teacher think about "bottom-left / top-right" for a straight line adds cognitive overhead for no benefit. Better UX: "Place start cone and finish cone. That's it."
+2. **Pose + height profile (Mobility)**: Best fit for side-on camera. ArUco not visible from side. Student height from profile is data that schools already collect. Zero physical calibration artefacts.
 
-2. **Balance / Explosiveness / Mobility**: These don't use floor cones. Forcing a BL/TR step would be confusing and unnecessary.
+3. **BL/TR bounding box (Agility, Fitness, Coordination)**: Transforms cone-based calibration by providing ROI + extra anchor points. Solves the over-detection problem that currently breaks Agility and Fitness.
 
-### Recommended simplification:
+4. **Two-cone linear (Sprint)**: Simple and sufficient. Start/finish cones = gates. Full homography is overkill for timing.
 
-Don't present calibration as "calibration" to teachers. Present it as **test setup**:
+### Where approaches DON'T work:
 
-- "Place your cones as shown in the diagram" (they're placing test cones, not calibrating)
-- "Make sure all cones are visible" (natural FOV check)
-- The green checkmark appears when detection + validation succeeds
+| Approach | Doesn't work for | Why |
+|----------|-------------------|-----|
+| ArUco bib | Mobility | Camera is side-on; bib faces forward; marker invisible |
+| ArUco bib | Cone-layout tests | Not relevant — these tests need floor-plane mapping, not body-plane scale |
+| BL/TR cones | Balance, Explosiveness | No floor cones in these tests; would be confusing busywork |
+| Pose + height | Explosiveness | Jumping distorts the skeleton; ArUco on bib is more reliable |
 
-The word "calibration" should never appear in the teacher-facing UI.
+### Key design principles:
+
+1. **Never show "calibration" in the UI.** Present it as test setup: "Place cones as shown", "Make sure bibs are visible".
+2. **Zero-effort where possible.** ArUco bibs and pose-based calibration require nothing from the teacher.
+3. **Fail fast with clear feedback.** If bibs aren't readable or cones aren't visible, tell the teacher *before* recording.
+4. **Per-student accuracy when it matters.** Explosiveness benefits most from per-student scale.
+
+---
+
+## Bib Design Specification
+
+The ArUco bib is a key physical artefact of the Vigour system. Design requirements:
+
+| Property | Specification |
+|----------|--------------|
+| **Bib number** | Large, human-readable, printed text (e.g., "07") — for teacher reference |
+| **ArUco marker** | 8cm × 8cm, printed below or beside the bib number |
+| **ArUco dictionary** | `cv2.aruco.DICT_4X4_50` — supports 50 unique IDs, fast detection |
+| **Marker ID encoding** | Marker ID = bib number (marker 7 = bib #7) |
+| **Material** | Rigid, non-wrinkling surface (stiff fabric or laminated card bib) |
+| **Marker border** | White border ≥ 1cm around marker (required for ArUco detection) |
+| **Attachment** | Pinned or velcro to student's chest — must lay flat |
+
+**ArUco vs OCR for student ID**: If ArUco marker ID encodes the bib number, PaddleOCR becomes a fallback rather than the primary ID method. ArUco detection is:
+- 10× faster than OCR
+- Works at 2× the distance
+- Near-zero false positive rate (cryptographic marker encoding)
+- Rotation and partial-occlusion tolerant
+
+**Dual-mode ID**: Pipeline attempts ArUco first; if marker not detected (wrinkled, obscured), falls back to PaddleOCR text reading. Both produce the same `bib_number` field on the `Track` object.
 
 ---
 
 ## Implementation Requirements (Pipeline Changes)
+
+### New: `calibrate_from_aruco_bib()`
+
+```python
+def calibrate_from_aruco_bib(
+    frame: np.ndarray,
+    marker_physical_size_cm: float = 8.0,
+    aruco_dict: int = cv2.aruco.DICT_4X4_50,
+) -> dict[int, CalibrationResult]:
+    """
+    Detect ArUco markers and compute per-student single-axis calibration.
+
+    Returns:
+        {marker_id: CalibrationResult} — one calibration per detected student.
+        CalibrationResult.method = "single_axis", pixels_per_cm = per-student value.
+    """
+```
+
+### New: `calibrate_from_student_height()`
+
+```python
+def calibrate_from_student_height(
+    pose: Pose,
+    student_height_cm: float,
+) -> CalibrationResult:
+    """
+    Compute single-axis px/cm from pose skeleton height and known student height.
+    Used for side-on camera tests where ArUco bib is not visible.
+    """
+```
+
+### Modified: `CalibrationResult` — add `per_student` support
+
+The current model has a single `pixels_per_cm`. For Explosiveness, we need per-student values. Options:
+1. Return a dict of `{track_id: CalibrationResult}` (preferred — explicit)
+2. Add a `per_student_px_cm: dict[int, float]` field to `CalibrationResult`
+
+### New: ArUco-based bib detection in OCR module
+
+Add `ArucoBibDetector` alongside existing `BibOCR`:
+```python
+class ArucoBibDetector:
+    """Primary bib identification via ArUco markers. Falls back to BibOCR."""
+
+    def detect(self, frame, tracks) -> dict[int, tuple[int, float]]:
+        """Returns {track_id: (bib_number, confidence)}"""
+```
 
 ### New: `validate_fov(frame, bl_cone_px, tr_cone_px, test_config) → FOVResult`
 
@@ -439,14 +570,14 @@ class FOVResult:
 
 ### New: Spatial ROI from BL/TR
 
-Once BL and TR are detected, their pixel positions define the spatial ROI for all subsequent cone detection. This replaces the static `spatial_roi` config with a dynamic, per-session ROI:
+Once BL and TR are detected, their pixel positions define the spatial ROI for all subsequent cone detection:
 
 ```python
 roi = {
     "x_min_frac": (bl_cone.cx / frame_width) - margin,
     "x_max_frac": (tr_cone.cx / frame_width) + margin,
-    "y_min_frac": (tr_cone.cy / frame_height) - margin,  # TR is farther = higher in frame
-    "y_max_frac": (bl_cone.cy / frame_height) + margin,  # BL is nearer = lower in frame
+    "y_min_frac": (tr_cone.cy / frame_height) - margin,
+    "y_max_frac": (bl_cone.cy / frame_height) + margin,
 }
 ```
 
@@ -459,8 +590,8 @@ Add optional `bl_tr_px` parameter:
 
 ### New test extractors needed:
 
-1. **`MobilityExtractor`** — trunk flexion angle + fingertip-to-floor distance
-2. **`CoordinationExtractor`** — completion time + sequence error detection
+1. **`MobilityExtractor`** — trunk flexion angle + fingertip-to-floor distance (Tier 1b calibration)
+2. **`CoordinationExtractor`** — completion time + sequence error detection (Tier 2 calibration)
 
 ---
 
@@ -469,6 +600,9 @@ Add optional `bl_tr_px` parameter:
 | Step | Current (POC) | Proposed (MVP) |
 |------|--------------|----------------|
 | Test selection | Not in app (manual) | App menu: select test type |
+| Student ID | PaddleOCR on bib text | ArUco marker ID (primary) + OCR (fallback) |
+| Calibration (Explosiveness) | Global cone-based px/cm | Per-student ArUco bib marker |
+| Calibration (Mobility) | N/A (test not built) | Pose skeleton + student height from profile |
 | Cone placement | Manual, no guidance | Step-by-step with diagrams |
 | Camera positioning | Trial and error | On-screen overlay guide |
 | FOV validation | None | BL/TR auto-check with feedback |
@@ -483,12 +617,16 @@ Add optional `bl_tr_px` parameter:
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
+| ArUco marker wrinkled/obscured on bib | Calibration fails for that student | Stiff bib material; fallback to median px/cm from other students; PaddleOCR fallback for ID |
+| ArUco not detected at distance | Scale unavailable | Minimum camera distance guidance; ArUco DICT_4X4 has high detection range |
+| Student height not in profile | Mobility calibration degraded | Use age/grade population average; log `height_estimated` flag |
 | Teacher can't find BL/TR positions | Blocks testing | Clear diagrams + "place here" overlay on camera feed |
 | Over-detection in shared gym | Wrong cones matched | BL/TR ROI eliminates ~80% of false cones |
 | HSV detection fails in poor lighting | Calibration blocked | Fall back to SAM3; future: ArUco markers on cones |
-| Phone camera FOV too narrow | Can't see all cones | Minimum distance guidance per test ("stand at least 4m away") |
+| Phone camera FOV too narrow | Can't see all cones | Minimum distance guidance per test |
 | Teacher removes BL/TR cones before recording | Loses calibration anchors | Lock calibration to session; re-check on record start |
 | Multiple simultaneous tests in same gym | Cross-contamination | Per-session ROI from BL/TR isolates each test zone |
+| Bib printing quality varies across schools | ArUco detection degrades | Provide printable PDF bib templates; specify minimum print DPI (300) |
 
 ---
 
@@ -496,5 +634,5 @@ Add optional `bl_tr_px` parameter:
 
 | Phase | Calibration capability |
 |-------|----------------------|
-| **MVP** | Implement BL/TR flow for Agility + Coordination + Fitness. Sprint uses 2-cone linear. Explosiveness uses single-axis. Balance = none. Mobility = single-axis (new extractor). |
-| **Phase 2** | ArUco markers on cone tops for unambiguous detection. Auto-camera-tilt estimation. Multi-phone calibration sync (same session, different tests). |
+| **MVP** | ArUco bib for Explosiveness (per-student px/cm). Pose + height for Mobility. BL/TR flow for Agility + Coordination + Fitness. Sprint uses 2-cone linear. Balance = none. ArUco marker ID as primary student identification across all tests. |
+| **Phase 2** | ArUco markers on cone tops for unambiguous cone detection. Auto-camera-tilt estimation. Multi-phone calibration sync. ML-based fallback calibration from scene geometry. |
