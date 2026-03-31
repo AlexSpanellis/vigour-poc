@@ -2,6 +2,8 @@
 
 This document captures the current calibration approach for each test type in the Vigour CV pipeline, including the cone-based calibration workflow for validating cone positions within the camera FOV.
 
+**Sprint, shuttle (linear), and fitness grid** also support **Tier 2b** (alongside **Tier 2a** cone layout): a long measuring tape establishes **depth** (along-track or along-row) in centimetres first; **cones are optional** and often used only for **horizontal** gates or layout highlights. **Tier 2b** is **more work for coaches** than **Tier 2a** and is documented in the subsections below.
+
 ---
 
 ## Overview
@@ -13,6 +15,44 @@ Calibration maps pixel coordinates to real-world measurements (centimetres). Thr
 | **Homography** (3x3 matrix) | Agility, Sprint, Shuttle, Fitness | Full 2D pixel↔world mapping |
 | **Single-axis** (px/cm scale) | Explosiveness | Vertical scale only |
 | **None** | Balance | No spatial calibration needed |
+
+### Diagram: calibration method by test type
+
+```mermaid
+flowchart TB
+  subgraph homography["Homography — pixel ↔ world 2D"]
+    H1[Agility — T-drill irregular]
+    H2[Sprint — linear start/finish]
+    H3[Shuttle — 6-cone linear]
+    H4[Fitness — grid]
+  end
+  subgraph single_axis["Single-axis — vertical px/cm"]
+    S1[Explosiveness — reference height]
+  end
+  subgraph no_cal["No spatial calibration"]
+    N1[Balance — temporal only]
+  end
+```
+
+### Diagram: cone-layout homography pipeline (shared path)
+
+Tests that use **homography** follow this pipeline; pattern-specific steps differ only inside correspondence solving.
+
+```mermaid
+flowchart TD
+  F[Frame BGR] --> D[detect_cones — HSV or SAM3]
+  D --> ROI[Spatial ROI + confidence filter]
+  ROI --> L[calibrate_from_layout]
+  L --> C1{Pattern}
+  C1 -->|grid| G[D4 / partial grid / iterative fit]
+  C1 -->|linear| L2[2-way assignment + DLT]
+  C1 -->|irregular| I[permutation or hull assignment]
+  G --> H[Compute homography H]
+  L2 --> H
+  I --> H
+  H --> V[Reprojection error vs threshold]
+  V --> R[CalibrationResult — is_valid]
+```
 
 ---
 
@@ -56,6 +96,16 @@ Two detection backends are available, configured per test via `calibration_detec
 
 **Known issue**: Over-detection (28 detected vs 4 expected) when other test cones are visible in the gym. Spatial ROI filtering helps but doesn't fully solve it.
 
+```mermaid
+flowchart LR
+  subgraph agility_process["Agility calibration process"]
+    A1[Detect cones] --> A2[Irregular layout + world coords from config]
+    A2 --> A3[Hull or full permutation N≤6]
+    A3 --> A4[Pick lowest reprojection error]
+    A4 --> A5[Homography + validity]
+  end
+```
+
 ---
 
 ### 2. Sprint (5m Linear)
@@ -70,6 +120,40 @@ Two detection backends are available, configured per test via `calibration_detec
 **How it works**: Projects hip centroid across start→finish lines using homography to map pixel X to world X. Sub-frame interpolation for timing precision.
 
 **Config keys**: `sprint_distance_m`, `num_attempts`
+
+#### Tier 2a: Cone-based linear gates (default)
+
+```mermaid
+flowchart LR
+  subgraph sprint_process["Sprint — Tier 2a cone layout"]
+    S1[Linear pattern — start / finish] --> S2[Homography or single-axis fallback]
+    S2 --> S3[Project hip on start→finish line]
+    S3 --> S4[Sub-frame gate crossing times]
+  end
+```
+
+#### Tier 2b: Tape-first depth calibration (Sprint — higher coach effort)
+
+**Intent**: Establish **depth scale first** using a long measuring tape laid along the run axis (camera depth / down the track), then optionally use cones only as **horizontal highlights** (start/finish lines, lane edges) rather than as the sole geometric anchors.
+
+**Why it exists**: In noisy gyms, cone-only detection can fail; a tape with clear tick marks at known centimetre positions gives deterministic depth samples. Coaches must carry tape, lay it straight, and often enter or confirm mark positions in the app — **more effort** than **Tier 2a** (two cones only).
+
+**Process (conceptual)**:
+
+1. **Depth from tape**: Lay tape from near-camera to far end along the 5 m run. Known distances along tape (e.g. 0, 250, 500 cm) are registered — either by detecting printed marks in the frame or by the coach tapping the image at each mark with known world Y (or along-run coordinate).
+2. **Scale / 1D mapping**: Pixel positions along the depth direction are mapped to cm using tape anchors (robust to missing lateral structure).
+3. **Optional horizontal cones**: Place cones at start/finish **across** the lane width for visibility and gate crossing — they refine lateral alignment and FOV but tape carries primary depth calibration.
+
+```mermaid
+flowchart LR
+  subgraph sprint_tape["Sprint — Tier 2b tape-first"]
+    ST1[Lay tape along run — known depth marks] --> ST2[Register marks → pixel ↔ depth cm]
+    ST2 --> ST3[Optional: start/finish cones for gates + lateral cue]
+    ST3 --> ST4[Project hip on run axis — gate times]
+  end
+```
+
+**Trade-off**: Better depth conditioning when cone detection is unreliable; **cost** is setup time, tape handling, and coach steps vs cone-only flow.
 
 ---
 
@@ -100,6 +184,33 @@ Two detection backends are available, configured per test via `calibration_detec
 **Calibration usage**: Maps hip to world X via homography, detects direction reversals near cones, counts complete shuttles per 15-second set.
 
 **Known issue**: 40 detected vs 6 expected due to other setups in scene. Spatial ROI + confidence thresholding partially mitigates.
+
+#### Tier 2a: Six-cone linear layout (default)
+
+```mermaid
+flowchart LR
+  subgraph shuttle_process["Shuttle — Tier 2a cone layout"]
+    T1[6 cones linear world X] --> T2[2 candidate orderings]
+    T2 --> T3[Choose min reprojection error]
+    T3 --> T4[Homography — hip → world X]
+    T4 --> T5[Direction reversals + shuttle count]
+  end
+```
+
+#### Tier 2b: Tape-first depth calibration (Shuttle / fitness linear — higher coach effort)
+
+Same idea as **Sprint Tier 2b**, extended along the **1000 cm** shuttle line: tape establishes depth (along-track) scale with marks at known intervals (e.g. every 200 cm to match nominal cone spacing). **Optional cones** at waypoints or ends provide horizontal emphasis and help the tracker, but depth correspondence is anchored by tape first.
+
+```mermaid
+flowchart LR
+  subgraph shuttle_tape["Shuttle linear — Tier 2b"]
+    SH1[Tape full length — depth marks at known cm] --> SH2[Register marks → depth scale + optional sparse H]
+    SH2 --> SH3[Optional: cones at 0…1000 cm as highlights]
+    SH3 --> SH4[Hip → world X + reversals]
+  end
+```
+
+**Trade-off**: Same as Sprint — more physical setup; useful when full cone counts are hard to detect reliably.
 
 ---
 
@@ -145,6 +256,44 @@ Two detection backends are available, configured per test via `calibration_detec
 
 **Known issue**: Near-singular H (condition numbers 9e7–2e8) from behind-view geometry. High reproj error threshold (28 cm) needed. Row-structured H initialisation (Fix 6) specifically addresses the 10× scale difference between X and Y axes in oblique views.
 
+#### Tier 2a: Full cone grid (default)
+
+```mermaid
+flowchart TD
+  subgraph fitness_process["Fitness grid — Tier 2a cone layout"]
+    F1[Detect many cones] --> F2[Spatial ROI + filters]
+    F2 --> F3{D4 exhaustive 8 variants}
+    F3 -->|fails| F4[Partial grid NN + row-structured H init]
+    F4 -->|fails| F5[Iterative grid fit]
+    F3 -->|ok| F6[Homography + condition check]
+    F5 --> F6
+    F4 --> F6
+    F6 --> F7[Optional extrinsics L-BFGS for oblique camera]
+    F7 --> F8[Valid if reproj & H OK]
+  end
+```
+
+#### Tier 2b: Tape-first depth + optional horizontal markers (Fitness grid — higher coach effort)
+
+**Intent**: Oblique grid calibration is sensitive to **depth (Y)**. A long tape can be run **along each row** (or along a central depth line) so known depth intervals are fixed before relying on 42 cone detections. **Optional cones** remain for **horizontal structure** — column alignment, row ends, and visual matching — but tape reduces dependence on dense cone correspondence for the depth axis.
+
+**Process (conceptual)**:
+
+1. **Depth**: Lay tape(s) parallel to the depth axis at known Y-spacing (e.g. 200 cm rows) or one central tape with transverse marks; register pixel↔cm along depth.
+2. **Horizontal**: Optional cones at grid corners or row ends to anchor X and tie tape to the configured `spacing_cm_x` / `spacing_cm_y` layout.
+3. **Solver**: Combine tape-derived depth constraints with partial cone grid matching, or initialise homography from depth-from-tape + sparse lateral points.
+
+```mermaid
+flowchart TD
+  subgraph grid_tape["Fitness grid — Tier 2b"]
+    G1[Tape: depth marks along Y — known row spacing] --> G2[Optional: cones at row/column highlights]
+    G2 --> G3[Partial grid + depth priors from tape]
+    G3 --> G4[Homography + fallbacks as in Tier 2a]
+  end
+```
+
+**Trade-off**: Highest coach effort (tape layout on a large grid) but can stabilise H when behind-camera perspective makes cone-only fits ill-conditioned.
+
 ---
 
 ### 5. Balance (Single-Leg Stance)
@@ -160,6 +309,15 @@ Two detection backends are available, configured per test via `calibration_detec
 - Detects ankle lift (Y < baseline - threshold)
 - State machine: BILATERAL → BALANCING → FAILED
 
+```mermaid
+flowchart LR
+  subgraph balance_process["Balance — no calibration"]
+    B1[Pose / ankles] --> B2[Baseline ankle Y — first ~30 frames]
+    B2 --> B3[Lift detection vs threshold]
+    B3 --> B4[Temporal state machine]
+  end
+```
+
 ---
 
 ### 6. Explosiveness (Vertical Jump)
@@ -173,6 +331,15 @@ Two detection backends are available, configured per test via `calibration_detec
 **Calibration**: `calibrate_single_axis()` computes vertical px/cm from a reference object height (default 23 cm, typically a cone height).
 
 **Jump measurement**: Standing baseline from first 30 frames → detect jump events → apex = min ankle Y during jump → height (px) converted to cm via `pixels_per_cm`.
+
+```mermaid
+flowchart LR
+  subgraph explosiveness_process["Explosiveness calibration process"]
+    E1[Reference height — cone or bib] --> E2[calibrate_single_axis]
+    E2 --> E3[pixels_per_cm vertical]
+    E3 --> E4[Jump apex px → cm]
+  end
+```
 
 ---
 
@@ -221,6 +388,21 @@ The system:
 - **Valid**: Green indicator, show reprojection error. Proceed to recording.
 - **Invalid**: Red indicator, show diagnostic info (which cones failed, reprojection error). Prompt user to adjust cones or camera and retry.
 
+### Diagram: cone calibration workflow (high level)
+
+```mermaid
+flowchart TD
+  U1[Place BL + TR reference cones] --> U2[FOV validation — both visible, bbox OK]
+  U2 -->|fail| U2a[Reposition camera or cones]
+  U2a --> U2
+  U2 -->|ok| U3[Regular Y-pattern + full layout per test]
+  U3 --> U4[Detect cones → ROI → correspondence → H]
+  U4 --> U5{Valid reproj?}
+  U5 -->|yes| U6[Green — record]
+  U5 -->|no| U7[Red — adjust and retry]
+  U7 --> U4
+```
+
 ---
 
 ## Key Thresholds & Parameters
@@ -251,6 +433,23 @@ The system:
 
 ## Data Flow
 
+```mermaid
+flowchart TB
+  Frame["Frame (BGR)"] --> detect["detect_cones() — HSV or SAM3"]
+  detect --> filt["Spatial ROI + confidence filter"]
+  filt --> branch{Test type}
+  branch --> layout["calibrate_from_layout — grid / linear / irregular"]
+  branch --> single["calibrate_single_axis — Explosiveness"]
+  branch --> skip["No calibration — Balance"]
+  layout --> CR["CalibrationResult — H or pixels_per_cm, is_valid"]
+  single --> CR
+  skip --> CR
+  CR --> guard["Test extractors guard on is_valid"]
+```
+
+<details>
+<summary>ASCII version (same content)</summary>
+
 ```
 Frame (BGR)
   │
@@ -277,3 +476,5 @@ Frame (BGR)
            │
            └─ Test Extractors guard on is_valid
 ```
+
+</details>

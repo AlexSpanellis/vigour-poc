@@ -6,16 +6,44 @@
 
 ---
 
-## Design Decision: Three Calibration Tiers
+## Design Decision: Calibration tiers (0, 1a, 1b, 2a, 2b)
 
-After analysing the 7 tests against camera geometry, measurement requirements, and teacher effort, three distinct calibration approaches emerge. **Not every test needs cones.**
+After analysing the 7 tests against camera geometry, measurement requirements, and teacher effort, **five** calibration approaches emerge (mirroring how **Tier 1** splits into **1a** and **1b**, **Tier 2** splits into **2a** and **2b**). **Not every test needs cones.**
 
 | Tier | Approach | Tests | Teacher effort |
 |------|----------|-------|---------------|
 | **Tier 0** | No calibration | Balance | Zero — just point camera |
 | **Tier 1a** | ArUco bib marker (per-student) | Explosiveness | Zero — marker on student's bib, automatic |
 | **Tier 1b** | Pose + student height from profile | Mobility | Zero — uses known height + detected skeleton |
-| **Tier 2** | Two-point bounding box + cone layout | Sprint, Fitness, Agility, Coordination | Place 2 reference cones → FOV check → place test cones |
+| **Tier 2a** | Two-point bounding box + **cone layout** (default floor calibration) | Sprint, Fitness, Agility, Coordination | Low–minimal — place reference cones → FOV check → place test cones |
+| **Tier 2b** | **Tape-first depth** + optional cones for horizontal gates / highlights | **Sprint and Fitness only** (shuttle line + large grid) | **Higher** — lay tape, measure, confirm marks in app |
+
+**Tier 2b** is optional: programmes that prefer survey-style floor references, or when cone-only CV is unreliable. It must **not** be the default first-time path within the 10-minute setup goal. **Agility** and **Coordination** use **Tier 2a only** in this architecture.
+
+### Diagram: calibration tier by test
+
+```mermaid
+flowchart TB
+  subgraph t0["Tier 0 — no calibration"]
+    T0B[Balance]
+  end
+  subgraph t1a["Tier 1a — ArUco bib"]
+    T1E[Explosiveness]
+  end
+  subgraph t1b["Tier 1b — pose + profile height"]
+    T1M[Mobility]
+  end
+  subgraph t2a["Tier 2a — cones + BL/TR FOV"]
+    T2S[Sprint]
+    T2F[Fitness / shuttle]
+    T2A[Agility]
+    T2C[Coordination]
+  end
+  subgraph t2b["Tier 2b — tape-first depth optional"]
+    T2bS[Sprint]
+    T2bF[Fitness shuttle + grid]
+  end
+```
 
 ---
 
@@ -28,6 +56,17 @@ After analysing the 7 tests against camera geometry, measurement requirements, a
 **Camera**: Front-facing, body height.
 
 **User flow**:
+
+```mermaid
+flowchart TD
+  B1[Select Balance] --> B2[Camera guide — front, waist height]
+  B2 --> B3{Person detected?}
+  B3 -->|no| B4[Prompt: move closer / adjust angle]
+  B4 --> B3
+  B3 -->|yes| B5[Ready to record]
+  B5 --> B6[Tap Record]
+```
+
 ```
 1. Teacher selects "Balance" test type
 2. App shows camera guide overlay:
@@ -70,6 +109,17 @@ After analysing the 7 tests against camera geometry, measurement requirements, a
 **Camera**: Front-facing → bib faces camera directly → ArUco marker is fully visible and near-square.
 
 **Proposed user flow**:
+
+```mermaid
+flowchart TD
+  E1[Select Explosiveness] --> E2[Setup guide — row facing camera, bibs visible]
+  E2 --> E3{All bibs / ArUco OK?}
+  E3 -->|no| E4[Per-student fix prompts]
+  E4 --> E3
+  E3 -->|yes| E5[Tap Record — bibs supply calibration]
+  E5 --> E6[3 jumps per student]
+```
+
 ```
 1. Teacher selects "Explosiveness" test type
 2. App shows setup guide:
@@ -133,6 +183,18 @@ pixels_per_cm = height_px / height_cm
 This gives us accurate single-axis calibration with zero teacher effort and zero physical calibration artefacts.
 
 **Proposed user flow**:
+
+```mermaid
+flowchart TD
+  M1[Select Mobility] --> M2[Setup guide — side-on, waist height, 2–3m]
+  M2 --> M3{Full body + pose OK?}
+  M3 -->|no| M4[Prompt: move camera — show full body]
+  M4 --> M3
+  M3 -->|yes| M5[Height scale from profile — ready]
+  M5 --> M6[Tap Record]
+  M6 --> M7[3 toe-touch attempts]
+```
+
 ```
 1. Teacher selects "Mobility" test type
 2. App shows setup guide:
@@ -164,16 +226,16 @@ This gives us accurate single-axis calibration with zero teacher effort and zero
 
 ---
 
-## Tier 2: Cone-Layout Calibration (Bounding-Box Approach)
+## Tier 2a: Cone-Layout Calibration (Bounding-Box Approach)
 
-These tests require mapping pixel coordinates to real-world positions because the pipeline must track movement across known distances (sprint gates, shuttle cones, agility waypoints, coordination taps).
+These tests require mapping pixel coordinates to real-world positions because the pipeline must track movement across known distances (sprint gates, shuttle cones, agility waypoints, coordination taps). **Tier 2a** is the default: geometry comes from **cones** and BL/TR FOV validation.
 
 ### The Shared Workflow: Bottom-Left / Top-Right Bounding-Box Check
 
-All Tier 2 tests share a common first phase before diverging into test-specific cone placement.
+All **Tier 2a** tests share a common first phase before diverging into test-specific cone placement.
 
 ```
-PHASE 1 — FOV VALIDATION (shared across all Tier 2 tests)
+PHASE 1 — FOV VALIDATION (shared across all Tier 2a tests)
 ═══════════════════════════════════════════════════════════
 
 Step 1: Teacher places TWO reference cones
@@ -207,6 +269,18 @@ Step 3: World-coordinate anchor
   This gives us 2 known pixel↔world pairs immediately.
 ```
 
+### Diagram: Tier 2a shared Phase 1 — FOV validation (all cone tests)
+
+```mermaid
+flowchart TD
+  P1[Place BL and TR reference cones] --> P2[App detects both in frame]
+  P2 --> P3{Inset, area, aspect OK?}
+  P3 -->|no| P4[Feedback: move camera / widen angle / move closer]
+  P4 --> P2
+  P3 -->|yes| P5[Anchor BL = 0,0 and TR = config size in cm]
+  P5 --> P6[Proceed to test-specific cone placement]
+```
+
 **Why this works**: Two diagonal corners give the maximum information about the spatial extent of the test area. They span both axes. Combined with the test-specific cone layout (which provides additional points), they anchor the homography robustly.
 
 **Why BL/TR specifically**: The bottom-left is closest to the camera (largest in frame, easiest to detect). The top-right is farthest (tests depth detection). Together they stress-test the full range of the camera's perspective distortion.
@@ -226,7 +300,7 @@ For tests where the teacher has flexibility in cone placement (fitness, coordina
 
 ---
 
-### Test 2 — Speed (5m Sprint)
+### Test 2 — Speed (5m Sprint) — Tier 2a
 
 **What we need to measure**: Time in seconds from start cone to finish cone.
 
@@ -235,6 +309,23 @@ For tests where the teacher has flexibility in cone placement (fitness, coordina
 **Cone layout**: 2 cones — start and finish, 5m (500cm) apart.
 
 **Proposed user flow**:
+
+```mermaid
+flowchart TD
+  subgraph S1["Phase 1 — FOV"]
+    SP1[BL = start cone, TR = finish — same 2 test cones] --> SP2[World: 0,0 → 0,500 cm]
+  end
+  subgraph S2["Phase 2 — Calibration automatic"]
+    SP3[Detect start + finish gates] --> SP4[Linear projection hip → gate line]
+    SP4 --> SP5[Ready — timing between gates]
+  end
+  subgraph S3["Phase 3 — Record"]
+    SP6[One student at a time, fixed camera]
+  end
+  SP2 --> SP3
+  SP5 --> SP6
+```
+
 ```
 PHASE 1 — FOV Validation
   BL cone = start cone (near camera)
@@ -263,13 +354,13 @@ PHASE 3 — Record
   Students run one at a time. Camera stays fixed.
 ```
 
-**Assessment**: Sprint is the simplest Tier 2 test. Two cones double as both FOV validation AND spatial reference. A full homography is overkill — projecting the hip centroid onto the start→finish line gives sub-frame timing accuracy. **This matches the current implementation** where sprint already calibrates successfully.
+**Assessment**: Sprint is the simplest **Tier 2a** test. Two cones double as both FOV validation AND spatial reference. A full homography is overkill — projecting the hip centroid onto the start→finish line gives sub-frame timing accuracy. **This matches the current implementation** where sprint already calibrates successfully.
 
 **Why not 3+ cones**: Adding a midpoint cone forces the teacher to measure 2.5m precisely — more work for negligible accuracy gain on a timing-only measurement. Two cones = two gates = time between gates.
 
 ---
 
-### Test 3 — Fitness (Repeated Shuttle Sprints)
+### Test 3 — Fitness (Repeated Shuttle Sprints) — Tier 2a
 
 **What we need to measure**: Distance travelled in each 15-second set. 6 cones, 2m apart in a line.
 
@@ -278,6 +369,32 @@ PHASE 3 — Record
 **Cone layout**: 6 cones linear, 200cm spacing → total 1000cm span.
 
 **Proposed user flow**:
+
+```mermaid
+flowchart TD
+  subgraph F1["Phase 1 — FOV"]
+    FV1[BL = cone 1, TR = cone 6 — 1000 cm line] --> FV2[Both end cones visible]
+  end
+  subgraph F2["Phase 2 — Place middle cones"]
+    FP1[4 cones between ends @ 200 cm] --> FP2{6 collinear, regular spacing?}
+    FP2 -->|no| FP3[Warnings: missing / crooked cone]
+    FP3 --> FP2
+    FP2 -->|yes| FP4[Calibration valid feedback]
+  end
+  subgraph F3["Phase 3 — Auto calibration"]
+    FC1[Linear correspondence → homography] --> FC2{Reproj under threshold?}
+    FC2 -->|no| FC3[Retry cone positions]
+    FC3 --> FP2
+    FC2 -->|yes| FC4[Ready to record]
+  end
+  subgraph F4["Phase 4 — Record"]
+    FR[Shuttle sets, fixed camera]
+  end
+  FV2 --> FP1
+  FP4 --> FC1
+  FC4 --> FR
+```
+
 ```
 PHASE 1 — FOV Validation
   BL cone = cone 1 (near-left, 0cm)
@@ -321,7 +438,7 @@ PHASE 4 — Record
 
 ---
 
-### Test 4 — Agility (Cone Drill)
+### Test 4 — Agility (Cone Drill) — Tier 2a
 
 **What we need to measure**: Completion time through a cone pattern. Need to detect when the student is near each waypoint cone.
 
@@ -330,6 +447,30 @@ PHASE 4 — Record
 **Cone layout**: 4+ cones in a test-specific pattern (e.g., T-drill, L-drill). Colour-coded: start, turns, finish.
 
 **Proposed user flow**:
+
+```mermaid
+flowchart TD
+  subgraph A1["Phase 1 — FOV"]
+    AG1[BL + TR bound drill area] --> AG2[Drill diagram overlay]
+    AG2 --> AG3[Drill area fully visible]
+  end
+  subgraph A2["Phase 2 — Pattern cones"]
+    AG4[Place 4+ cones per diagram] --> AG5{Count + pattern match in ROI?}
+    AG5 -->|no| AG6[Fix visibility / positions]
+    AG6 --> AG5
+    AG5 -->|yes| AG7[Optional: keep BL/TR as extra points]
+  end
+  subgraph A3["Phase 3 — Calibration"]
+    AG8[World coords from config — permutation solve] --> AG9[Homography valid]
+  end
+  subgraph A4["Phase 4 — Record"]
+    AG10[One student per drill]
+  end
+  AG3 --> AG4
+  AG7 --> AG8
+  AG9 --> AG10
+```
+
 ```
 PHASE 1 — FOV Validation
   The agility drill has a specific geometric pattern.
@@ -386,7 +527,7 @@ PHASE 4 — Record
 
 ---
 
-### Test 7 — Coordination (4-Cone Lateral Tap Sequence)
+### Test 7 — Coordination (4-Cone Lateral Tap Sequence) — Tier 2a
 
 **What we need to measure**: Total time + sequence error detection. Student taps 4 cones in a 2m × 2m square in a prescribed clockwise order.
 
@@ -395,6 +536,26 @@ PHASE 4 — Record
 **Cone layout**: 4 cones in a square — this IS a regular pattern.
 
 **Proposed user flow**:
+
+```mermaid
+flowchart TD
+  subgraph C1["Phase 1 — FOV"]
+    CD1[4 cones in 2m square — BL/BR/TR/TL] --> CD2[4 cones detected, square OK]
+  end
+  subgraph C2["Phase 2 — Auto calibration"]
+    CD3[D4 correspondence 2x2 grid] --> CD4[Right-angle check]
+    CD4 --> CD5{Valid reproj?}
+    CD5 -->|no| CD6[Adjust cones / camera]
+    CD6 --> CD2
+    CD5 -->|yes| CD7[Ready]
+  end
+  subgraph C3["Phase 3 — Record"]
+    CD8[3 sequences, tap order validation]
+  end
+  CD2 --> CD3
+  CD7 --> CD8
+```
+
 ```
 PHASE 1 — FOV Validation
   The square pattern has natural BL/TR corners:
@@ -430,7 +591,7 @@ PHASE 3 — Record
   and validate sequence order.
 ```
 
-**Assessment**: Coordination is a **natural fit** for the cone-based calibration approach. The 4-cone square IS the test layout AND the calibration grid. The 2×2 grid provides the D4 symmetry group (8 candidates), and with 4 well-separated points the homography is well-conditioned.
+**Assessment**: Coordination is a **natural fit** for **Tier 2a** cone-based calibration. The 4-cone square IS the test layout AND the calibration grid. The 2×2 grid provides the D4 symmetry group (8 candidates), and with 4 well-separated points the homography is well-conditioned.
 
 **Sequence error detection** is the unique challenge here — the pipeline needs to track *which* cone the foot is near and in *what order*. This requires:
 1. Accurate pixel→world mapping (homography) to determine proximity to each cone
@@ -441,6 +602,74 @@ PHASE 3 — Record
 
 ---
 
+## Tier 2b: Tape-First Depth Calibration (Sprint and Fitness Only)
+
+**Tier 2b** parallels **Tier 1b** in naming: a second calibration style under the same broad “floor / spatial” family as **Tier 2a**, but with a different primary instrument — a **long measuring tape** for **depth in cm** first; **cones are optional** and often used only for **horizontal** gates, lane edges, or grid highlights. **Agility** and **Coordination** do not use Tier 2b in this architecture.
+
+### Sprint (Tier 2b)
+
+**When to use**: Shared gym with poor cone visibility, or programme policy that prefers measured floor references over cone-only geometry.
+
+**Idea**: Lay a **long measuring tape** along the 5 m run (camera-near to camera-far). Register **depth in centimetres first** using marks on the tape. **Cones are optional** — e.g. only at start/finish **across** the lane for horizontal gate lines and athlete cues.
+
+```mermaid
+flowchart TD
+  SB1[Select Sprint — Tier 2b] --> SB2[Lay tape along full 5m run]
+  SB2 --> SB3[App: tape visible end-to-end in frame]
+  SB3 --> SB4[Register depth marks — 0, 250, 500 cm or per protocol]
+  SB4 --> SB5{Marks aligned in view?}
+  SB5 -->|no| SB6[Adjust camera or straighten tape]
+  SB6 --> SB3
+  SB5 -->|yes| SB7[Optional: start/finish cones for horizontal gates]
+  SB7 --> SB8[Ready — depth from tape + optional gate cones]
+  SB8 --> SB9[Record]
+```
+
+**Coach cost vs Tier 2a**: Extra minutes for tape layout and mark confirmation. **Do not** present Tier 2b as the default path for first-time teachers.
+
+### Fitness — shuttle line (Tier 2b)
+
+**When to use**: Depth or scale is easier to trust from a **continuous tape** along the 0–1000 cm line than from six cone centroids alone.
+
+**Idea**: Run tape along the **entire shuttle line**. Register marks at known intervals (e.g. every 200 cm). **Cones optional** at waypoints for **horizontal** visibility — product policy defines minimum visible markers if middle cones are omitted.
+
+```mermaid
+flowchart TD
+  FB1[Select Fitness shuttle — Tier 2b] --> FB2[Lay tape 0–1000 cm along line]
+  FB2 --> FB3[FOV: tape visible full length]
+  FB3 --> FB4[Register depth marks — e.g. 0,200,…,1000 cm]
+  FB4 --> FB5{Spacing matches protocol?}
+  FB5 -->|no| FB6[Re-lay or re-measure]
+  FB6 --> FB3
+  FB5 -->|yes| FB7[Optional: cones at marks for lateral highlight + CV]
+  FB7 --> FB8[Calibrate — depth priors from tape + optional cone H]
+  FB8 --> FB9[Record shuttle sets]
+```
+
+**Coach cost vs Tier 2a**: Substantially higher — long tape, many confirmations, optional cones on top. Reserve for advanced users or difficult environments.
+
+### Fitness — large grid (Tier 2b)
+
+**Applies to**: The **42-cone grid** fitness layout (see calibration processes doc §4), not the 6-cone shuttle line.
+
+**Idea**: **Tape along depth (Y)** so row spacing is grounded in measured cm; **optional cones** at row ends or columns for **horizontal** anchors and visual structure.
+
+```mermaid
+flowchart TD
+  FG1[Select Fitness grid — Tier 2b] --> FG2[Lay tape along depth axis — row spacing per config]
+  FG2 --> FG3[Register Y marks — e.g. every 200 cm]
+  FG3 --> FG4[Optional: cones at corners / row ends for X + highlights]
+  FG4 --> FG5[Combine tape depth constraints + cone grid solve]
+  FG5 --> FG6{Valid calibration?}
+  FG6 -->|no| FG7[Adjust tape or cones]
+  FG7 --> FG3
+  FG6 -->|yes| FG8[Record]
+```
+
+**Coach cost**: Highest **Tier 2b** variant — large floor area and optional dozens of cones. **Not** the default onboarding flow.
+
+---
+
 ## Summary: Approach Assessment Per Test
 
 | Test | Tier | Calibration Source | Teacher Effort | Accuracy |
@@ -448,10 +677,14 @@ PHASE 3 — Record
 | **Balance** | 0 | None | Zero | N/A (temporal only) |
 | **Explosiveness** | 1a | ArUco bib marker (per-student) | Zero | High — per-student depth-corrected |
 | **Mobility** | 1b | Pose skeleton + student height profile | Zero | Good — depends on profile height accuracy |
-| **Sprint** | 2 | 2 cones (start/finish) | Minimal — place 2 cones | High — linear projection |
-| **Fitness** | 2 | BL/TR + 6 linear cones | Low — place 6 cones | High — well-conditioned homography |
-| **Agility** | 2 | BL/TR ROI + 4 drill cones | Low — place 4-6 cones | High — BL/TR eliminates false detections |
-| **Coordination** | 2 | 4-cone square (= BL/TR naturally) | Low — place 4 cones | High — D4 grid, natural BL/TR |
+| **Sprint** | **2a** (default) | 2 cones (start/finish) | Minimal — place 2 cones | High — linear projection |
+| **Sprint** | **2b** (optional) | Tape-first depth + optional gate cones | Higher — tape + marks | Same intent, more setup |
+| **Fitness (shuttle)** | **2a** (default) | BL/TR + 6 linear cones | Low — place 6 cones | High — well-conditioned homography |
+| **Fitness (shuttle)** | **2b** (optional) | Tape full line + optional cones | Higher | Same intent, more setup |
+| **Fitness (grid)** | **2a** (default) | Cone grid + `calibrate_from_layout` | Low–moderate | High (challenging geometry) |
+| **Fitness (grid)** | **2b** (optional) | Tape on depth axis + optional cone anchors | Highest | Stabilises depth when cones alone are weak |
+| **Agility** | **2a** | BL/TR ROI + 4 drill cones | Low — place 4–6 cones | High — BL/TR eliminates false detections |
+| **Coordination** | **2a** | 4-cone square (= BL/TR naturally) | Low — place 4 cones | High — D4 grid, natural BL/TR |
 
 ### Where each approach shines:
 
@@ -459,9 +692,11 @@ PHASE 3 — Record
 
 2. **Pose + height profile (Mobility)**: Best fit for side-on camera. ArUco not visible from side. Student height from profile is data that schools already collect. Zero physical calibration artefacts.
 
-3. **BL/TR bounding box (Agility, Fitness, Coordination)**: Transforms cone-based calibration by providing ROI + extra anchor points. Solves the over-detection problem that currently breaks Agility and Fitness.
+3. **BL/TR bounding box (Tier 2a — Agility, Fitness, Coordination)**: Transforms cone-based calibration by providing ROI + extra anchor points. Solves the over-detection problem that currently breaks Agility and Fitness.
 
-4. **Two-cone linear (Sprint)**: Simple and sufficient. Start/finish cones = gates. Full homography is overkill for timing.
+4. **Two-cone linear (Tier 2a — Sprint)**: Simple and sufficient. Start/finish cones = gates. Full homography is overkill for timing.
+
+5. **Tape-first depth (Tier 2b — Sprint / Fitness only)**: A long calibration tape registers **depth in cm** along the track or grid before (or instead of relying solely on) cone centroids; cones become **optional horizontal** cues (gates, lane edges, row/column markers). Use when environments make cone-only geometry brittle — at the cost of **more coach time and setup** than **Tier 2a**.
 
 ### Where approaches DON'T work:
 
@@ -591,7 +826,7 @@ Add optional `bl_tr_px` parameter:
 ### New test extractors needed:
 
 1. **`MobilityExtractor`** — trunk flexion angle + fingertip-to-floor distance (Tier 1b calibration)
-2. **`CoordinationExtractor`** — completion time + sequence error detection (Tier 2 calibration)
+2. **`CoordinationExtractor`** — completion time + sequence error detection (Tier 2a calibration)
 
 ---
 
@@ -634,5 +869,5 @@ Add optional `bl_tr_px` parameter:
 
 | Phase | Calibration capability |
 |-------|----------------------|
-| **MVP** | ArUco bib for Explosiveness (per-student px/cm). Pose + height for Mobility. BL/TR flow for Agility + Coordination + Fitness. Sprint uses 2-cone linear. Balance = none. ArUco marker ID as primary student identification across all tests. |
-| **Phase 2** | ArUco markers on cone tops for unambiguous cone detection. Auto-camera-tilt estimation. Multi-phone calibration sync. ML-based fallback calibration from scene geometry. |
+| **MVP** | ArUco bib for Explosiveness (per-student px/cm). Pose + height for Mobility. **Tier 2a** BL/TR flow for Agility + Coordination + Fitness. Sprint uses 2-cone linear. Balance = none. ArUco marker ID as primary student identification across all tests. |
+| **Phase 2** | **Tier 2b** tape-first flows where needed. ArUco markers on cone tops for unambiguous cone detection. Auto-camera-tilt estimation. Multi-phone calibration sync. ML-based fallback calibration from scene geometry. |
