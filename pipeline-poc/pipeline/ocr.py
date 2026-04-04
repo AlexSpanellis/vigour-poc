@@ -49,14 +49,24 @@ class BibOCR:
     def _load_ocr(self):
         try:
             from paddleocr import PaddleOCR  # type: ignore
+            import paddleocr as _pocr
 
-            self._ocr = PaddleOCR(
-                use_angle_cls=True,
-                lang="en",
-                use_gpu=True,
-                show_log=False,
-            )
-            logger.info("PaddleOCR PP-OCRv4 loaded.")
+            major = int(_pocr.__version__.split(".")[0])
+            if major >= 3:
+                # PaddleOCR >=3.x: constructor only accepts lang + model params.
+                # Device is auto-detected by PaddlePaddle; angle cls is default on.
+                import os
+                os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+                self._ocr = PaddleOCR(lang="en")
+            else:
+                # PaddleOCR 2.x API
+                self._ocr = PaddleOCR(
+                    use_angle_cls=True,
+                    lang="en",
+                    use_gpu=True,
+                    show_log=False,
+                )
+            logger.info("PaddleOCR %s loaded.", _pocr.__version__)
         except ImportError:
             raise ImportError(
                 "paddleocr not installed. Run: pip install paddlepaddle-gpu paddleocr"
@@ -76,14 +86,40 @@ class BibOCR:
         if self._ocr is None:
             self._load_ocr()
 
-        result = self._ocr.ocr(enhanced_crop, cls=True)
+        try:
+            result = self._ocr.ocr(enhanced_crop, cls=True)
+        except TypeError:
+            # PaddleOCR 3.x: .ocr() may not accept cls kwarg
+            result = self._ocr.ocr(enhanced_crop)
+
+        # PaddleOCR 2.x returns: [[([box], (text, conf)), ...]]
+        # PaddleOCR 3.x may return: [{"text": ..., "score": ..., ...}, ...] or similar
         for line in (result or [[]]):
-            for _box, (text, _conf) in (line or []):
+            if isinstance(line, dict):
+                # 3.x dict format
+                text = str(line.get("text", line.get("rec_text", "")))
                 clean = text.strip().replace(" ", "")
                 if clean.isdigit():
                     val = int(clean)
                     if self.min_bib <= val <= self.max_bib:
                         return val
+            elif isinstance(line, (list, tuple)):
+                for item in (line or []):
+                    if isinstance(item, dict):
+                        text = str(item.get("text", item.get("rec_text", "")))
+                    elif isinstance(item, (list, tuple)) and len(item) == 2:
+                        _box, payload = item
+                        if isinstance(payload, (list, tuple)) and len(payload) == 2:
+                            text = str(payload[0])
+                        else:
+                            continue
+                    else:
+                        continue
+                    clean = text.strip().replace(" ", "")
+                    if clean.isdigit():
+                        val = int(clean)
+                        if self.min_bib <= val <= self.max_bib:
+                            return val
         return None
 
     def read_frame(
