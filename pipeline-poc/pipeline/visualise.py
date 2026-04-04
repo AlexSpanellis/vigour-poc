@@ -367,6 +367,7 @@ def render_top_down_view(
     poses: list[Pose],
     size: tuple[int, int] = (220, 220),
     expected_cone_positions_world: list[tuple[float, float]] | None = None,
+    flip_x: bool = True,
 ) -> np.ndarray:
     """
     Render a top-down view in world coordinates (cm).
@@ -393,7 +394,11 @@ def render_top_down_view(
         except (ValueError, Exception):
             pass
 
-    # Gather world positions for persons (hip midpoint)
+    # Gather world positions for persons.
+    # Use ankle midpoint (keypoints 15, 16) rather than hip — the homography
+    # maps the ground plane, and hips are ~90 cm above it.  With an oblique
+    # camera the vertical offset projects as ~1 cone-row (~200 cm) depth error.
+    # Fall back to hip midpoint only when ankles are not visible.
     pose_map = {p.track_id: p for p in poses}
     person_world: list[tuple[float, float, int]] = []  # (x, y, track_id)
     for track in tracks:
@@ -401,14 +406,21 @@ def render_top_down_view(
         if pose is None:
             continue
         kps = pose.keypoints
-        if kps[11, 2] > 0.3 and kps[12, 2] > 0.3:
-            hx = (kps[11, 0] + kps[12, 0]) / 2
-            hy = (kps[11, 1] + kps[12, 1]) / 2
-            try:
-                wx, wy = calibrator.pixel_to_world((float(hx), float(hy)), calibration)
-                person_world.append((wx, wy, track.track_id))
-            except (ValueError, Exception):
-                pass
+        # Prefer ankles (ground plane)
+        if kps[15, 2] > 0.3 and kps[16, 2] > 0.3:
+            px = (kps[15, 0] + kps[16, 0]) / 2
+            py = (kps[15, 1] + kps[16, 1]) / 2
+        elif kps[11, 2] > 0.3 and kps[12, 2] > 0.3:
+            # Fallback: hip midpoint
+            px = (kps[11, 0] + kps[12, 0]) / 2
+            py = (kps[11, 1] + kps[12, 1]) / 2
+        else:
+            continue
+        try:
+            wx, wy = calibrator.pixel_to_world((float(px), float(py)), calibration)
+            person_world.append((wx, wy, track.track_id))
+        except (ValueError, Exception):
+            pass
 
     # Bounding box in world coords (include expected grid so full layout is visible)
     all_pts = cone_world + [(x, y) for x, y, _ in person_world]
@@ -431,8 +443,11 @@ def render_top_down_view(
 
     def world_to_canvas(x: float, y: float) -> tuple[int, int]:
         # World Y increases "up" in typical court layout; canvas Y increases down
-        # Map world (x,y) to canvas: X→right, Y→down (flip world Y for top-down)
-        u = (x - x_min) / (x_max - x_min) if x_max > x_min else 0.5
+        # flip_x mirrors X so the top-down view matches the camera orientation
+        if flip_x:
+            u = (x_max - x) / (x_max - x_min) if x_max > x_min else 0.5
+        else:
+            u = (x - x_min) / (x_max - x_min) if x_max > x_min else 0.5
         v = (y_max - y) / (y_max - y_min) if y_max > y_min else 0.5  # flip Y
         margin = 25
         cw = w_canvas - 2 * margin
